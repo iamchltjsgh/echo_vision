@@ -1,0 +1,34 @@
+name: stealth_eye
+description: Echo Vision - 청각장애인 1인 가구를 위한 현관 감지 알림 앱
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.0.0
+  tflite_flutter: ^0.12.1
+  vibration: ^3.2.0
+  torch_light: ^1.0.0
+  flutter_foreground_task: ^6.0.0
+  audioplayers: ^6.0.0
+  permission_handler: ^11.0.0
+  shared_preferences: ^2.0.0
+  image: ^4.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^2.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/model.tflite
+    - assets/sounds/knock.mp3
+    - assets/sounds/bell.mp3
+    - assets/sounds/threat.mp3
+    - assets/sounds/emergency.mp3

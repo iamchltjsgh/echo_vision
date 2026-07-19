@@ -1,0 +1,535 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import '../models/event_model.dart';
+import '../services/sse_service.dart';
+import '../services/notification_service.dart';
+import '../services/tflite_service.dart';
+import '../services/settings_service.dart';
+import 'event_screen.dart';
+import 'history_screen.dart';
+import 'settings_screen.dart';
+
+class HomeScreen extends StatefulWidget {
+  final SSEService sseService;
+  final NotificationService notificationService;
+  final TFLiteService tfliteService;
+  final SettingsService settingsService;
+
+  const HomeScreen({
+    super.key,
+    required this.sseService,
+    required this.notificationService,
+    required this.tfliteService,
+    required this.settingsService,
+  });
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  int _currentIndex = 0;
+  StreamSubscription<EventModel>? _eventSubscription;
+  StreamSubscription<EventModel>? _loiterSubscription;
+  StreamSubscription<bool>? _connectionSubscription;
+  bool _isConnected = false;
+  EventModel? _lastEvent;
+  final List<EventModel> _eventHistory = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _isConnected = widget.sseService.isConnected;
+
+    _connectionSubscription = widget.sseService.connectionStream.listen((connected) {
+      if (mounted) setState(() => _isConnected = connected);
+    });
+
+    // v2 전용: 체류 확인(loiter) 보고가 다른 클라이언트/재연결에서 들어오면
+    // 새 알림을 띄우지 않고 해당 이벤트 카드만 갱신한다. v1 서버는 이 메시지를 보내지 않으므로 그냥 안 쓰인다.
+    _loiterSubscription = widget.sseService.loiterStream.listen((update) {
+      if (!mounted || update.eventId == null) return;
+      setState(() {
+        for (final e in _eventHistory) {
+          if (e.eventId == update.eventId) {
+            e.loiterConfirmed = true;
+          }
+        }
+        if (_lastEvent?.eventId == update.eventId) {
+          _lastEvent!.loiterConfirmed = true;
+        }
+      });
+    });
+
+    _eventSubscription = widget.sseService.eventStream.listen((event) async {
+      if (!mounted) return;
+      setState(() {
+        _lastEvent = event;
+        _eventHistory.insert(0, event);
+        if (_eventHistory.length > 50) _eventHistory.removeLast();
+      });
+
+      if (!event.bypassVision && event.image != null) {
+        final bytes = await widget.sseService.downloadSnapshot(event.image!);
+        if (bytes != null) {
+          event.snapshotBytes = bytes;
+          final result = await widget.tfliteService.analyzeImage(bytes);
+          event.visionResult = result;
+          // v2(app_v2.py) 전용: 사람으로 판정되면 서버에 체류 확인을 보고해
+          // 다른 기기/재연결 클라이언트에도 동기화한다. v1 서버는 해당 엔드포인트가
+          // 없어 조용히 실패하므로 그냥 무시된다(SSEService.reportLoiterConfirmed 참고).
+          if (result == VisionResult.person && event.eventId != null) {
+            await widget.sseService.reportLoiterConfirmed(event.eventId!);
+          }
+        }
+      }
+
+      await widget.notificationService.triggerAlert(event);
+
+      if (mounted) {
+        showDialog(
+          context: context,
+          barrierDismissible: false,
+          builder: (_) => EventScreen(event: event),
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _eventSubscription?.cancel();
+    _loiterSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _simulateEvent(EventType type) async {
+    final now = DateTime.now();
+    final event = EventModel(
+      eventType: type,
+      confidence: 0.10, // 임시값 (테스트 버튼용)
+      time: _formatTime(now),
+      timestamp: now.toIso8601String(),
+    );
+    setState(() {
+      _lastEvent = event;
+      _eventHistory.insert(0, event);
+    });
+    await widget.notificationService.triggerAlert(event);
+    if (mounted) {
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => EventScreen(event: event),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0A14),
+      body: Center(
+        child: Container(
+          width: double.infinity,
+          constraints: const BoxConstraints(maxWidth: 480),
+          color: const Color(0xFF1A1A2E),
+          child: _buildCurrentTab(),
+        ),
+      ),
+      bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildCurrentTab() {
+    switch (_currentIndex) {
+      case 0:
+        return _buildHomeTab();
+      case 1:
+        return HistoryScreen(
+          sseService: widget.sseService,
+          eventHistory: _eventHistory,
+        );
+      case 2:
+        return _buildNotificationTab();
+      case 3:
+        return SettingsScreen(
+          settingsService: widget.settingsService,
+          sseService: widget.sseService,
+          onTestEvent: _simulateEvent,
+        );
+      default:
+        return _buildHomeTab();
+    }
+  }
+
+  Widget _buildHomeTab() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.only(left: 20, right: 20, top: 16, bottom: 120),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(height: MediaQuery.of(context).padding.top),
+          // Header
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Echo Vision',
+                style: TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFE2E8F0),
+                  letterSpacing: -0.5,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                decoration: BoxDecoration(
+                  color: _isConnected ? const Color(0xFF0D3D1F) : const Color(0xFF3D0D0D),
+                  borderRadius: BorderRadius.circular(50),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        color: _isConnected ? const Color(0xFF4ADE80) : const Color(0xFFEF4444),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      _isConnected ? '감시 중' : '연결 끊김',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w500,
+                        color: _isConnected ? const Color(0xFF4ADE80) : const Color(0xFFEF4444),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          // Camera Preview
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              color: Colors.black,
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: AspectRatio(
+              aspectRatio: 4 / 3,
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.videocam_outlined, size: 48, color: Colors.white.withValues(alpha: 0.3)),
+                    const SizedBox(height: 8),
+                    Text(
+                      '카메라 피드',
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 16),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          // Last Event Card
+          if (_lastEvent != null)
+            _buildEventCard(_lastEvent!)
+          else
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E2535),
+                borderRadius: BorderRadius.circular(12),
+                border: const Border(
+                  left: BorderSide(color: Color(0xFF3B82F6), width: 4),
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text(
+                        '대기 중',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF3B82F6),
+                        ),
+                      ),
+                      SizedBox(height: 2),
+                      Text(
+                        '이벤트를 기다리고 있습니다',
+                        style: TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+                      ),
+                    ],
+                  ),
+                  Text(
+                    _formatTime(DateTime.now()),
+                    style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+                  ),
+                ],
+              ),
+            ),
+          const SizedBox(height: 20),
+          // Status Grid
+          Row(
+            children: [
+              _buildStatusTile(
+                icon: Icons.flash_on,
+                label: '플래시',
+                color: widget.settingsService.flashEnabled ? const Color(0xFFFACC15) : const Color(0xFF6B7280),
+                enabled: widget.settingsService.flashEnabled,
+              ),
+              const SizedBox(width: 12),
+              _buildStatusTile(
+                icon: Icons.waves,
+                label: '진동',
+                color: widget.settingsService.hapticEnabled ? const Color(0xFFA78BFA) : const Color(0xFF6B7280),
+                enabled: widget.settingsService.hapticEnabled,
+              ),
+              const SizedBox(width: 12),
+              _buildStatusTile(
+                icon: widget.settingsService.soundEnabled ? Icons.volume_up : Icons.volume_off,
+                label: widget.settingsService.soundEnabled ? '소리 켜짐' : '소리 꺼짐',
+                color: widget.settingsService.soundEnabled ? const Color(0xFF3B82F6) : const Color(0xFF6B7280),
+                enabled: widget.settingsService.soundEnabled,
+              ),
+            ],
+          ),
+          const SizedBox(height: 24),
+          // Test Buttons
+          const Text(
+            '알림 팝업 미리보기',
+            style: TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildTestButton('노크', const Color(0xFF0F2744), const Color(0xFF3B82F6), EventType.knock),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildTestButton('초인종', const Color(0xFF0F2744), const Color(0xFF3B82F6), EventType.doorbell),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildTestButton('위협', const Color(0xFF2D1A00), const Color(0xFFFB923C), EventType.impact),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _buildTestButton('화재', const Color(0xFF2D0F0F), const Color(0xFFEF4444), EventType.emergency),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEventCard(EventModel event) {
+    Color borderColor;
+    switch (event.eventType) {
+      case EventType.knock:
+      case EventType.doorbell:
+        borderColor = const Color(0xFF3B82F6);
+        break;
+      case EventType.impact:
+        borderColor = const Color(0xFFFB923C);
+        break;
+      case EventType.emergency:
+        borderColor = const Color(0xFFEF4444);
+        break;
+      default:
+        borderColor = const Color(0xFF3B82F6);
+    }
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E2535),
+        borderRadius: BorderRadius.circular(12),
+        border: Border(
+          left: BorderSide(color: borderColor, width: 4),
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                event.eventType.displayName,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: borderColor,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                event.loiterConfirmed
+                    ? '방문자 체류 확인'
+                    : (event.visionResult?.displayName ?? '방문자 감지됨'),
+                style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+              ),
+            ],
+          ),
+          Text(
+            _formatTime(DateTime.tryParse(event.timestamp) ?? DateTime.now()),
+            style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusTile({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required bool enabled,
+  }) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E2535),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: [
+            Icon(icon, size: 20, color: color),
+            const SizedBox(height: 6),
+            Text(
+              label,
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: color),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTestButton(String label, Color bgColor, Color textColor, EventType type) {
+    return GestureDetector(
+      onTap: () => _simulateEvent(type),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        decoration: BoxDecoration(
+          color: bgColor,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Center(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: textColor,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNotificationTab() {
+    return SingleChildScrollView(
+      padding: EdgeInsets.only(left: 20, right: 20, top: MediaQuery.of(context).padding.top + 16, bottom: 120),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            '알림',
+            style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold, color: Color(0xFFE2E8F0)),
+          ),
+          const SizedBox(height: 20),
+          if (_eventHistory.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(40),
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E2535),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(
+                children: [
+                  Icon(Icons.notifications_none, size: 48, color: Colors.white.withValues(alpha: 0.3)),
+                  const SizedBox(height: 12),
+                  const Text('알림이 없습니다', style: TextStyle(fontSize: 16, color: Color(0xFF9CA3AF))),
+                ],
+              ),
+            )
+          else
+            ...(_eventHistory.take(20).map((e) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _buildEventCard(e),
+            ))),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xFF0D0D1A),
+        border: Border(top: BorderSide(color: Color(0xFF2A2A3D))),
+      ),
+      padding: EdgeInsets.only(
+        top: 8,
+        bottom: MediaQuery.of(context).padding.bottom + 12,
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceAround,
+        children: [
+          _buildNavItem(Icons.home_outlined, '홈', 0),
+          _buildNavItem(Icons.access_time, '이력', 1),
+          _buildNavItem(Icons.notifications_outlined, '알림', 2),
+          _buildNavItem(Icons.settings_outlined, '설정', 3),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNavItem(IconData icon, String label, int index) {
+    final isSelected = _currentIndex == index;
+    final color = isSelected ? const Color(0xFF3B82F6) : const Color(0xFF6B7280);
+    return GestureDetector(
+      onTap: () => setState(() => _currentIndex = index),
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: 64,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 22, color: color),
+            const SizedBox(height: 4),
+            Text(label, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: color)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatTime(DateTime dt) {
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+}
