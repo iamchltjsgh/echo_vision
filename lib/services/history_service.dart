@@ -1,0 +1,32 @@
+import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/event_model.dart';
+
+/// 이벤트 이력을 기기에 영구 저장하는 서비스.
+/// 앱을 완전히 종료했다가 다시 켜도 이력 탭에 과거 이벤트가 남아있도록
+/// SharedPreferences에 JSON 문자열로 저장/로드한다.
+/// (스냅샷 이미지 바이트는 용량 문제로 저장하지 않고, 다음 실행 시 재다운로드하지 않는다)
+class HistoryService {
+  static const String _key = 'event_history';
+  static const int maxStored = 50;
+
+  Future<List<EventModel>> load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_key);
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list
+          .map((e) => EventModel.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> save(List<EventModel> events) async {
+    final prefs = await SharedPreferences.getInstance();
+    final trimmed = events.take(maxStored).map((e) => e.toJson()).toList();
+    await prefs.setString(_key, jsonEncode(trimmed));
+  }
+}

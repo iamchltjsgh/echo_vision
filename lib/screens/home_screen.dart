@@ -5,6 +5,7 @@ import '../services/sse_service.dart';
 import '../services/notification_service.dart';
 import '../services/tflite_service.dart';
 import '../services/settings_service.dart';
+import '../services/history_service.dart';
 import 'event_screen.dart';
 import 'history_screen.dart';
 import 'settings_screen.dart';
@@ -14,6 +15,7 @@ class HomeScreen extends StatefulWidget {
   final NotificationService notificationService;
   final TFLiteService tfliteService;
   final SettingsService settingsService;
+  final HistoryService historyService;
 
   const HomeScreen({
     super.key,
@@ -21,6 +23,7 @@ class HomeScreen extends StatefulWidget {
     required this.notificationService,
     required this.tfliteService,
     required this.settingsService,
+    required this.historyService,
   });
 
   @override
@@ -40,6 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _isConnected = widget.sseService.isConnected;
+    _loadHistory();
 
     _connectionSubscription = widget.sseService.connectionStream.listen((connected) {
       if (mounted) setState(() => _isConnected = connected);
@@ -59,6 +63,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _lastEvent!.loiterConfirmed = true;
         }
       });
+      widget.historyService.save(_eventHistory);
     });
 
     _eventSubscription = widget.sseService.eventStream.listen((event) async {
@@ -68,6 +73,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _eventHistory.insert(0, event);
         if (_eventHistory.length > 50) _eventHistory.removeLast();
       });
+      widget.historyService.save(_eventHistory);
 
       if (!event.bypassVision && event.image != null) {
         final bytes = await widget.sseService.downloadSnapshot(event.image!);
@@ -96,6 +102,15 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Future<void> _loadHistory() async {
+    final saved = await widget.historyService.load();
+    if (!mounted || saved.isEmpty) return;
+    setState(() {
+      _eventHistory.addAll(saved);
+      _lastEvent ??= saved.first;
+    });
+  }
+
   @override
   void dispose() {
     _eventSubscription?.cancel();
@@ -116,6 +131,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _lastEvent = event;
       _eventHistory.insert(0, event);
     });
+    widget.historyService.save(_eventHistory);
     await widget.notificationService.triggerAlert(event);
     if (mounted) {
       showDialog(
@@ -131,11 +147,14 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A14),
       body: Center(
-        child: Container(
-          width: double.infinity,
+        child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 480),
-          color: const Color(0xFF1A1A2E),
-          child: _buildCurrentTab(),
+          child: Container(
+            width: double.infinity,
+            height: double.infinity,
+            color: const Color(0xFF1A1A2E),
+            child: _buildCurrentTab(),
+          ),
         ),
       ),
       bottomNavigationBar: _buildBottomNav(),

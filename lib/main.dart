@@ -5,6 +5,7 @@ import 'services/sse_service.dart';
 import 'services/notification_service.dart';
 import 'services/tflite_service.dart';
 import 'services/settings_service.dart';
+import 'services/history_service.dart';
 import 'screens/home_screen.dart';
 
 void main() async {
@@ -32,6 +33,7 @@ void main() async {
   sseService.setServerUrl(settingsService.serverUrl);
 
   final notificationService = NotificationService(settingsService);
+  final historyService = HistoryService();
 
   sseService.connect();
 
@@ -41,6 +43,7 @@ void main() async {
       sseService: sseService,
       notificationService: notificationService,
       tfliteService: tfliteService,
+      historyService: historyService,
     ),
   );
 }
@@ -52,8 +55,8 @@ void main() async {
 Future<void> _requestPermissions() async {
   try {
     final permissions = <Permission>[
-      Permission.camera,        // 플래시 점멸용
-      Permission.notification,  // 알림 표시용 (Android 13+)
+      Permission.camera, // 플래시 점멸용
+      Permission.notification, // 알림 표시용 (Android 13+)
     ];
 
     // 한번에 모든 권한 요청
@@ -70,12 +73,12 @@ Future<void> _requestPermissions() async {
   }
 }
 
-
 class EchoVisionApp extends StatelessWidget {
   final SettingsService settingsService;
   final SSEService sseService;
   final NotificationService notificationService;
   final TFLiteService tfliteService;
+  final HistoryService historyService;
 
   const EchoVisionApp({
     super.key,
@@ -83,6 +86,7 @@ class EchoVisionApp extends StatelessWidget {
     required this.sseService,
     required this.notificationService,
     required this.tfliteService,
+    required this.historyService,
   });
 
   @override
@@ -90,7 +94,8 @@ class EchoVisionApp extends StatelessWidget {
     return MaterialApp(
       title: 'Echo Vision',
       debugShowCheckedModeBanner: false,
-      scrollBehavior: const MaterialScrollBehavior().copyWith(overscroll: false),
+      scrollBehavior:
+          const MaterialScrollBehavior().copyWith(overscroll: false),
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF1A1A2E),
@@ -114,6 +119,7 @@ class EchoVisionApp extends StatelessWidget {
         notificationService: notificationService,
         tfliteService: tfliteService,
         settingsService: settingsService,
+        historyService: historyService,
       ),
     );
   }
