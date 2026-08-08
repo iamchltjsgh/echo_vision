@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
+import 'dart:typed_data';
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
@@ -8,6 +9,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/alert_presets.dart';
 import '../models/event_model.dart';
 import 'history_service.dart';
 import 'settings_service.dart';
@@ -29,9 +31,13 @@ void sseServiceCallback() {
 class SseTaskHandler extends TaskHandler {
   static const String _channelNormalId = 'echo_vision_normal';
   static const String _channelAlertId = 'echo_vision_alert';
-  static const String _channelEmergencyId = 'echo_vision_emergency';
+  // 안드로이드 알림 채널은 한 번 만들어지면 중요도/사운드/오디오스트림 같은 속성이
+  // 이후에 바뀌어도 반영이 안 된다(불변). audioAttributesUsage를 alarm으로 새로 추가하면서
+  // 채널 id를 바꿔서, 이미 이 앱을 써본 기기에서도 확실히 새 설정으로 다시 만들어지게 한다.
+  static const String _channelEmergencyId = 'echo_vision_emergency_v2';
 
   final HistoryService _history = HistoryService();
+  final SettingsService _settings = SettingsService();
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
 
@@ -49,6 +55,7 @@ class SseTaskHandler extends TaskHandler {
   void onStart(DateTime timestamp, SendPort? sendPort) async {
     WidgetsFlutterBinding.ensureInitialized();
     _sendPort = sendPort;
+    await _settings.init();
     await _initNotifications();
     _shouldReconnect = true;
     unawaited(_startConnection());
@@ -106,6 +113,9 @@ class SseTaskHandler extends TaskHandler {
         // DND(방해금지) 우회는 hasNotificationPolicyAccess 권한이 없으면
         // 경고만 찍히고 무시된다 — 권한 유도는 main.dart/settings_screen.dart에서.
         bypassDnd: true,
+        // 알림 볼륨이 아니라 알람 볼륨을 쓴다 — 사용자가 알림 소리는 무음으로 해놔도
+        // 알람 볼륨은 대개 켜두므로, 화재처럼 놓치면 안 되는 알림에 한해 더 잘 들리게.
+        audioAttributesUsage: AudioAttributesUsage.alarm,
       ),
     );
   }
@@ -240,6 +250,10 @@ class SseTaskHandler extends TaskHandler {
   }
 
   Future<void> _showEventNotification(EventModel event) async {
+    // 설정 화면(UI isolate)에서 방금 바꿨을 수도 있는 값이라 캐시 말고 새로 읽는다.
+    await (await SharedPreferences.getInstance()).reload();
+    final vibrationPreset = _settings.alertConfigFor(event.eventType).vibrationPreset;
+
     // 앱이 지금 포그라운드면 인앱 알림(NotificationService.triggerAlert)이
     // 곧 따로 실행되므로, 시스템 알림은 소리/진동 없이 조용히만(배지처럼) 띄운다.
     // EMERGENCY는 예외 — 놓치면 안 되니 포그라운드여도 그대로 강행한다.
@@ -281,12 +295,22 @@ class SseTaskHandler extends TaskHandler {
       color: color,
       playSound: alertLoudly,
       enableVibration: alertLoudly,
-      vibrationPattern: event.eventType.vibrationPattern,
+      // flutter_local_notifications는 Int64List를 요구한다(vibration 패키지와 다름 —
+      // alert_presets.dart의 buildVibrationPattern 주석 참고).
+      vibrationPattern: Int64List.fromList(buildVibrationPattern(
+        event.eventType.vibrationRepeatCount,
+        vibrationPreset,
+      )),
       // Android 14+에서는 USE_FULL_SCREEN_INTENT를 사용자가 수동으로 허용해야
       // 실제로 잠금화면 위로 뜬다 (main.dart 온보딩 참고) — 안 돼 있으면
       // 그냥 최우선 헤드업 알림으로 자연 강등된다.
       fullScreenIntent: isEmergency,
       category: isEmergency ? AndroidNotificationCategory.alarm : null,
+      // 채널 생성 시점(_initNotifications)에 이미 정해지지만, 혹시 그 전에
+      // 이 알림이 채널을 새로 만들게 되는 경우를 대비해 여기도 맞춰둔다.
+      audioAttributesUsage: isEmergency
+          ? AudioAttributesUsage.alarm
+          : AudioAttributesUsage.notification,
     );
 
     final id = event.eventId?.hashCode.abs() ??

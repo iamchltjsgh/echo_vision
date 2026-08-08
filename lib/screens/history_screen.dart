@@ -5,12 +5,41 @@ import '../services/sse_service.dart';
 class HistoryScreen extends StatelessWidget {
   final SSEService sseService;
   final List<EventModel> eventHistory;
+  final VoidCallback onClear;
 
   const HistoryScreen({
     super.key,
     required this.sseService,
     required this.eventHistory,
+    required this.onClear,
   });
+
+  Future<void> _confirmClear(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E2535),
+        title: const Text('이력을 모두 삭제할까요?', style: TextStyle(color: Color(0xFFE2E8F0))),
+        content: const Text(
+          '삭제하면 되돌릴 수 없어요.',
+          style: TextStyle(color: Color(0xFF9CA3AF)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('취소', style: TextStyle(color: Color(0xFF6B7280))),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('삭제', style: TextStyle(color: Color(0xFFEF4444))),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      onClear();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -23,13 +52,30 @@ class HistoryScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '이벤트 이력',
-            style: TextStyle(
-              fontSize: 21,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFFE2E8F0),
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                '이벤트 이력',
+                style: TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFFE2E8F0),
+                ),
+              ),
+              if (eventHistory.isNotEmpty)
+                GestureDetector(
+                  onTap: () => _confirmClear(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E2535),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.delete_outline, size: 20, color: Color(0xFFEF4444)),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 20),
           if (eventHistory.isEmpty)

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import '../models/alert_presets.dart';
 import '../models/event_model.dart';
 import '../services/settings_service.dart';
 import '../services/sse_service.dart';
@@ -168,7 +169,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text(
-                      '소리 볼륨 (공통)',
+                      '소리 볼륨 (앱 실행 중)',
                       style: TextStyle(fontSize: 16, color: Color(0xFFE2E8F0)),
                     ),
                     Text(
@@ -184,6 +185,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                   activeColor: const Color(0xFF3B82F6),
                   inactiveColor: const Color(0xFF2A2A3D),
+                ),
+                const Text(
+                  '앱이 꺼져 있을 때 오는 알림 소리는 이 값이 아니라 폰 자체의 알림 볼륨을 따라요 '
+                  '(화재는 알람 볼륨을 따로 써서 더 잘 들리게 했어요).',
+                  style: TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
                 ),
               ],
             ),
@@ -324,8 +330,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
+          if (config.flash) ...[
+            const SizedBox(height: 10),
+            _buildPresetRow<FlashPreset>(
+              label: '플래시 길이',
+              options: FlashPreset.values,
+              selected: config.flashPreset,
+              displayName: (p) => p.displayName,
+              onSelect: (p) {
+                setState(() {
+                  widget.settingsService.setAlertConfigFor(type, config.copyWith(flashPreset: p));
+                });
+              },
+            ),
+          ],
+          if (config.haptic) ...[
+            const SizedBox(height: 10),
+            _buildPresetRow<VibrationPreset>(
+              label: '진동 스타일',
+              options: VibrationPreset.values,
+              selected: config.vibrationPreset,
+              displayName: (p) => p.displayName,
+              onSelect: (p) {
+                setState(() {
+                  widget.settingsService.setAlertConfigFor(type, config.copyWith(vibrationPreset: p));
+                });
+              },
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  /// 프리셋(짧게/보통/길게 등) 고르는 작은 알약 버튼 줄 — 플래시 길이/진동 스타일 공용
+  Widget _buildPresetRow<T>({
+    required String label,
+    required List<T> options,
+    required T selected,
+    required String Function(T) displayName,
+    required ValueChanged<T> onSelect,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280))),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: options.map((option) {
+            final isSelected = option == selected;
+            return GestureDetector(
+              onTap: () => onSelect(option),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: isSelected ? const Color(0xFF3B82F6) : const Color(0xFF0A0A14),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: isSelected ? const Color(0xFF3B82F6) : const Color(0xFF2A2A3D),
+                  ),
+                ),
+                child: Text(
+                  displayName(option),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isSelected ? Colors.white : const Color(0xFF9CA3AF),
+                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                  ),
+                ),
+              ),
+            );
+          }).toList(),
+        ),
+      ],
     );
   }
 

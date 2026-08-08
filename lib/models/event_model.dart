@@ -64,29 +64,40 @@ enum EventType {
     }
   }
 
-  /// 진동 패턴 (ms, [대기, 진동, 대기, 진동...]).
-  /// 인앱 알림(NotificationService)과 백그라운드 시스템 알림(background_sse_handler)이
-  /// 같은 숫자를 쓰도록 여기 한 곳에만 정의한다.
-  Int64List get vibrationPattern {
+  /// 진동을 몇 번 반복할지 (타입별 "다급함"의 정체성 — 사용자가 못 바꾸는 부분).
+  /// 실제 진동 길이/스타일은 VibrationPreset(사용자 설정)과 합쳐서
+  /// alert_presets.dart의 buildVibrationPattern()이 만든다.
+  int get vibrationRepeatCount {
     switch (this) {
       case EventType.knock:
-        // 짧게 3번
-        return Int64List.fromList([0, 200, 100, 200, 100, 200]);
+        return 3;
       case EventType.doorbell:
-        // 짧게 2번
-        return Int64List.fromList([0, 300, 150, 300]);
+        return 2;
       case EventType.impact:
-        // 길게 강하게 1초
-        return Int64List.fromList([0, 1000]);
+        return 1;
       case EventType.emergency:
-        // 연속 5회 반복
-        return Int64List.fromList(
-          [0, 300, 100, 300, 100, 300, 100, 300, 100, 300],
-        );
+        return 5;
       case EventType.normal:
       case EventType.unknown:
-        // 미분류(anonymous) 소리: 중간 세기 1번
-        return Int64List.fromList([0, 400]);
+        return 1;
+    }
+  }
+
+  /// 플래시를 몇 번 점멸할지 (타입별 정체성). 점멸 길이는 FlashPreset(사용자 설정)과
+  /// 합쳐서 alert_presets.dart의 buildFlashBlinks()가 만든다.
+  int get flashBlinkCount {
+    switch (this) {
+      case EventType.knock:
+        return 1;
+      case EventType.doorbell:
+        return 2;
+      case EventType.impact:
+        return 1;
+      case EventType.emergency:
+        return 5;
+      case EventType.normal:
+      case EventType.unknown:
+        return 1;
     }
   }
 }
@@ -139,7 +150,7 @@ class EventModel {
   VisionResult? visionResult;
 
   /// 스냅샷 이미지 바이트 (다운로드 후 저장)
-  List<int>? snapshotBytes;
+  Uint8List? snapshotBytes;
 
   EventModel({
     this.eventId,

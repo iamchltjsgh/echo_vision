@@ -1,24 +1,37 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../models/alert_presets.dart';
 import '../models/event_model.dart';
 
-/// 이벤트 하나에 대한 알림 채널(플래시/진동/소리) on-off 조합
+/// 이벤트 하나에 대한 알림 채널(플래시/진동/소리) on-off 조합 + 길이/스타일 프리셋
 class EventAlertConfig {
   final bool flash;
   final bool haptic;
   final bool sound;
+  final FlashPreset flashPreset;
+  final VibrationPreset vibrationPreset;
 
   const EventAlertConfig({
     this.flash = false,
     this.haptic = false,
     this.sound = false,
+    this.flashPreset = FlashPreset.normal,
+    this.vibrationPreset = VibrationPreset.shortRepeat,
   });
 
-  EventAlertConfig copyWith({bool? flash, bool? haptic, bool? sound}) {
+  EventAlertConfig copyWith({
+    bool? flash,
+    bool? haptic,
+    bool? sound,
+    FlashPreset? flashPreset,
+    VibrationPreset? vibrationPreset,
+  }) {
     return EventAlertConfig(
       flash: flash ?? this.flash,
       haptic: haptic ?? this.haptic,
       sound: sound ?? this.sound,
+      flashPreset: flashPreset ?? this.flashPreset,
+      vibrationPreset: vibrationPreset ?? this.vibrationPreset,
     );
   }
 
@@ -27,10 +40,24 @@ class EventAlertConfig {
       flash: json['flash'] as bool? ?? false,
       haptic: json['haptic'] as bool? ?? false,
       sound: json['sound'] as bool? ?? false,
+      flashPreset: FlashPreset.values.firstWhere(
+        (p) => p.name == json['flashPreset'],
+        orElse: () => FlashPreset.normal,
+      ),
+      vibrationPreset: VibrationPreset.values.firstWhere(
+        (p) => p.name == json['vibrationPreset'],
+        orElse: () => VibrationPreset.shortRepeat,
+      ),
     );
   }
 
-  Map<String, dynamic> toJson() => {'flash': flash, 'haptic': haptic, 'sound': sound};
+  Map<String, dynamic> toJson() => {
+    'flash': flash,
+    'haptic': haptic,
+    'sound': sound,
+    'flashPreset': flashPreset.name,
+    'vibrationPreset': vibrationPreset.name,
+  };
 }
 
 /// 앱 설정 관리 서비스
@@ -54,13 +81,30 @@ class SettingsService {
   ];
 
   /// 타입별 설정을 저장한 적 없을 때 쓰는 기본값.
-  /// 과거 하드코딩 동작(노크/초인종은 진동만, 위협/화재는 플래시+진동, 미분류는 무알림)과 동일하게 맞춘다.
+  /// 과거 하드코딩 동작(노크/초인종은 진동만, 위협/화재는 플래시+진동, 미분류는 무알림)과
+  /// 최대한 비슷하게 맞춘 프리셋(예: 위협은 예전에 500ms 긴 점멸이었으니 flashPreset.long).
   static const Map<EventType, EventAlertConfig> _defaultAlertConfig = {
-    EventType.knock: EventAlertConfig(haptic: true),
-    EventType.doorbell: EventAlertConfig(haptic: true),
-    EventType.impact: EventAlertConfig(flash: true, haptic: true),
-    EventType.emergency: EventAlertConfig(flash: true, haptic: true),
-    EventType.unknown: EventAlertConfig(),
+    EventType.knock: EventAlertConfig(
+      haptic: true,
+      vibrationPreset: VibrationPreset.shortRepeat,
+    ),
+    EventType.doorbell: EventAlertConfig(
+      haptic: true,
+      vibrationPreset: VibrationPreset.shortRepeat,
+    ),
+    EventType.impact: EventAlertConfig(
+      flash: true,
+      haptic: true,
+      flashPreset: FlashPreset.long,
+      vibrationPreset: VibrationPreset.continuousLong,
+    ),
+    EventType.emergency: EventAlertConfig(
+      flash: true,
+      haptic: true,
+      flashPreset: FlashPreset.normal,
+      vibrationPreset: VibrationPreset.shortRepeat,
+    ),
+    EventType.unknown: EventAlertConfig(vibrationPreset: VibrationPreset.longRepeat),
   };
 
   SharedPreferences? _prefs;

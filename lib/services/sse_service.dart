@@ -125,7 +125,7 @@ class SSEService {
   /// 스냅샷 이미지 다운로드
   /// [imageFilename]은 이벤트의 image 필드(파일명만, 예: "20260713_..._a1b2c3.jpg").
   /// 서버 실제 경로는 GET /photos/<filename> 이므로 여기서 조합한다.
-  Future<List<int>?> downloadSnapshot(String imageFilename) async {
+  Future<Uint8List?> downloadSnapshot(String imageFilename) async {
     try {
       final url = '$_serverUrl/photos/$imageFilename';
       final response = await http.get(Uri.parse(url));

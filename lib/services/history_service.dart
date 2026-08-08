@@ -35,4 +35,10 @@ class HistoryService {
     final trimmed = events.take(maxStored).map((e) => e.toJson()).toList();
     await prefs.setString(_key, jsonEncode(trimmed));
   }
+
+  /// 이력 전체 삭제
+  Future<void> clear() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_key);
+  }
 }

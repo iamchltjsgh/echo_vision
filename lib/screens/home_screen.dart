@@ -81,17 +81,24 @@ class _HomeScreenState extends State<HomeScreen> {
         if (_eventHistory.length > 50) _eventHistory.removeLast();
       });
 
-      if (!event.bypassVision && event.image != null) {
+      if (event.image != null) {
         final bytes = await widget.sseService.downloadSnapshot(event.image!);
         if (bytes != null) {
           event.snapshotBytes = bytes;
-          final result = await widget.tfliteService.analyzeImage(bytes);
-          event.visionResult = result;
-          // v2(app_v2.py) 전용: 사람으로 판정되면 서버에 체류 확인을 보고해
-          // 다른 기기/재연결 클라이언트에도 동기화한다. v1 서버는 해당 엔드포인트가
-          // 없어 조용히 실패하므로 그냥 무시된다(SSEService.reportLoiterConfirmed 참고).
-          if (result == VisionResult.person && event.eventId != null) {
-            await widget.sseService.reportLoiterConfirmed(event.eventId!);
+          // 카메라 피드에 방금 받은 사진을 바로 보여주기 위한 갱신.
+          if (mounted) setState(() {});
+
+          // EMERGENCY는 비전 분석(사람/택배 판별) 자체를 건너뛴다 — 사진 다운로드는
+          // 타입 상관없이 항상 하되, 체류 확인 로직만 스킵한다.
+          if (!event.bypassVision) {
+            final result = await widget.tfliteService.analyzeImage(bytes);
+            event.visionResult = result;
+            // v2(app_v2.py) 전용: 사람으로 판정되면 서버에 체류 확인을 보고해
+            // 다른 기기/재연결 클라이언트에도 동기화한다. v1 서버는 해당 엔드포인트가
+            // 없어 조용히 실패하므로 그냥 무시된다(SSEService.reportLoiterConfirmed 참고).
+            if (result == VisionResult.person && event.eventId != null) {
+              await widget.sseService.reportLoiterConfirmed(event.eventId!);
+            }
           }
         }
       }
@@ -115,6 +122,21 @@ class _HomeScreenState extends State<HomeScreen> {
       _eventHistory.addAll(saved);
       _lastEvent ??= saved.first;
     });
+    await _ensureLastEventSnapshot();
+  }
+
+  /// 스냅샷 바이트는 용량 문제로 이력에 영구저장하지 않으므로(HistoryService 참고),
+  /// 앱을 다시 켰을 때는 가장 최근 이벤트 사진이 비어있다 — 카메라 피드에 보여주려면
+  /// 파일명(image)으로 한 번 다시 받아와야 한다.
+  Future<void> _ensureLastEventSnapshot() async {
+    final event = _lastEvent;
+    if (event == null || event.image == null || event.snapshotBytes != null) {
+      return;
+    }
+    final bytes = await widget.sseService.downloadSnapshot(event.image!);
+    if (bytes != null && mounted) {
+      setState(() => event.snapshotBytes = bytes);
+    }
   }
 
   /// 앱을 처음 켰을 때 딱 한 번, 배터리 최적화 제외를 안내한다.
@@ -155,6 +177,16 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  /// 이력 탭의 삭제 버튼(확인 다이얼로그는 HistoryScreen에서 이미 거침)에서 호출.
+  Future<void> _clearHistory() async {
+    await widget.historyService.clear();
+    if (!mounted) return;
+    setState(() {
+      _eventHistory.clear();
+      _lastEvent = null;
+    });
   }
 
   @override
@@ -215,6 +247,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return HistoryScreen(
           sseService: widget.sseService,
           eventHistory: _eventHistory,
+          onClear: _clearHistory,
         );
       case 2:
         return SettingsScreen(
@@ -279,28 +312,34 @@ class _HomeScreenState extends State<HomeScreen> {
             ],
           ),
           const SizedBox(height: 20),
-          // Camera Preview
+          // Camera Preview — 가장 최근 이벤트 사진이 있으면 그걸, 없으면 자리표시자
           Container(
             width: double.infinity,
             decoration: BoxDecoration(
               color: Colors.black,
               borderRadius: BorderRadius.circular(16),
             ),
+            clipBehavior: Clip.antiAlias,
             child: AspectRatio(
               aspectRatio: 4 / 3,
-              child: Center(
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(Icons.videocam_outlined, size: 48, color: Colors.white.withValues(alpha: 0.3)),
-                    const SizedBox(height: 8),
-                    Text(
-                      '카메라 피드',
-                      style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 16),
+              child: _lastEvent?.snapshotBytes != null
+                  ? Image.memory(
+                      _lastEvent!.snapshotBytes!,
+                      fit: BoxFit.cover,
+                    )
+                  : Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.videocam_outlined, size: 48, color: Colors.white.withValues(alpha: 0.3)),
+                          const SizedBox(height: 8),
+                          Text(
+                            '카메라 피드',
+                            style: TextStyle(color: Colors.white.withValues(alpha: 0.3), fontSize: 16),
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
-                ),
-              ),
             ),
           ),
           const SizedBox(height: 20),

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:vibration/vibration.dart';
 import 'package:torch_light/torch_light.dart';
+import '../models/alert_presets.dart';
 import '../models/event_model.dart';
 import 'settings_service.dart';
 
@@ -26,10 +27,10 @@ class NotificationService {
       futures.add(_playSound(event.eventType));
     }
     if (config.haptic) {
-      futures.add(_triggerHaptic(event.eventType));
+      futures.add(_triggerHaptic(event.eventType, config.vibrationPreset));
     }
     if (config.flash) {
-      futures.add(_triggerFlash(event.eventType));
+      futures.add(_triggerFlash(event.eventType, config.flashPreset));
     }
 
     await Future.wait(futures);
@@ -81,71 +82,43 @@ class NotificationService {
     }
   }
 
-  /// 햅틱 진동 실행
-  /// 패턴은 EventType.vibrationPattern에 정의돼 있다 — 백그라운드 시스템 알림의
-  /// 진동 패턴과 같은 소스를 쓴다(둘이 따로 관리되면서 슬금슬금 달라지는 걸 방지).
-  Future<void> _triggerHaptic(EventType type) async {
+  /// 햅틱 진동 실행.
+  /// 반복 횟수는 EventType.vibrationRepeatCount(타입 정체성),
+  /// 길이/스타일은 preset(사용자가 설정 화면에서 고른 값) — 백그라운드 시스템 알림도
+  /// 같은 alert_presets.dart 함수를 써서 인앱/백그라운드 진동이 항상 일치한다.
+  Future<void> _triggerHaptic(EventType type, VibrationPreset preset) async {
     try {
       final hasVibrator = await Vibration.hasVibrator();
       if (!hasVibrator) return;
 
+      final pattern = buildVibrationPattern(type.vibrationRepeatCount, preset);
       await Vibration.vibrate(
-        pattern: type.vibrationPattern,
+        pattern: pattern,
         // 위협 감지는 강도를 최대로 (기기가 강도 조절을 지원하지 않으면 무시됨).
-        // intensities는 pattern과 길이가 같아야 하고, 대기 구간은 0.
-        intensities: type == EventType.impact ? const [0, 255] : const [],
+        // intensities는 pattern과 길이가 같아야 하고, 대기 구간(짝수 인덱스)은 0.
+        intensities: type == EventType.impact
+            ? List.generate(pattern.length, (i) => i.isEven ? 0 : 255)
+            : const [],
       );
     } catch (e) {
       debugPrint('햅틱 진동 오류: $e');
     }
   }
 
-  /// 플래시 점멸 실행
-  Future<void> _triggerFlash(EventType type) async {
+  /// 플래시 점멸 실행.
+  /// 몇 번 점멸할지는 EventType.flashBlinkCount(타입 정체성),
+  /// 한 번 켜지는 길이는 preset(사용자가 설정 화면에서 고른 값)에서 가져온다.
+  Future<void> _triggerFlash(EventType type, FlashPreset preset) async {
     try {
-      switch (type) {
-        case EventType.knock:
-          // 짧게 1회 점멸
-          await TorchLight.enableTorch();
-          await Future.delayed(const Duration(milliseconds: 200));
-          await TorchLight.disableTorch();
-          break;
-        case EventType.doorbell:
-          // 짧게 2회 점멸
-          for (int i = 0; i < 2; i++) {
-            await TorchLight.enableTorch();
-            await Future.delayed(const Duration(milliseconds: 200));
-            await TorchLight.disableTorch();
-            if (i < 1) {
-              await Future.delayed(const Duration(milliseconds: 150));
-            }
-          }
-          break;
-        case EventType.impact:
-          // 500ms 점멸 1회
-          await TorchLight.enableTorch();
-          await Future.delayed(const Duration(milliseconds: 500));
-          await TorchLight.disableTorch();
-          break;
-        case EventType.emergency:
-          // 연속 5회 점멸 [200ms ON, 100ms OFF]
-          for (int i = 0; i < 5; i++) {
-            await TorchLight.enableTorch();
-            await Future.delayed(const Duration(milliseconds: 200));
-            await TorchLight.disableTorch();
-            if (i < 4) {
-              await Future.delayed(const Duration(milliseconds: 100));
-            }
-          }
-          break;
-        case EventType.unknown:
-          // 미분류(anonymous) 소리: 노크보다 약간 긴 1회 점멸
-          await TorchLight.enableTorch();
-          await Future.delayed(const Duration(milliseconds: 300));
-          await TorchLight.disableTorch();
-          break;
-        default:
-          break;
+      final blinks = buildFlashBlinks(type.flashBlinkCount, preset);
+      for (var i = 0; i < blinks.length; i++) {
+        final (onMs, offMs) = blinks[i];
+        await TorchLight.enableTorch();
+        await Future.delayed(Duration(milliseconds: onMs));
+        await TorchLight.disableTorch();
+        if (i < blinks.length - 1) {
+          await Future.delayed(Duration(milliseconds: offMs));
+        }
       }
     } catch (e) {
       debugPrint('플래시 점멸 오류: $e');
