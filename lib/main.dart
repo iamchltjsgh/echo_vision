@@ -49,13 +49,13 @@ void main() async {
 }
 
 /// 앱 시작 시 필수 권한을 한꺼번에 요청
-/// - 카메라 (플래시 사용)
 /// - 알림 (Android 13+)
+/// 카메라 권한은 요청하지 않음 — torch_light는 CameraManager.setTorchMode()로 플래시를 제어하며
+/// API 23+(본 앱 minSdk 24)에서는 카메라 런타임 권한 없이 동작하므로 불필요.
 /// 마이크 권한은 요청하지 않음 — 커스텀 소리 등록 기능을 제외하기로 해서 더 이상 불필요.
 Future<void> _requestPermissions() async {
   try {
     final permissions = <Permission>[
-      Permission.camera, // 플래시 점멸용
       Permission.notification, // 알림 표시용 (Android 13+)
     ];
 

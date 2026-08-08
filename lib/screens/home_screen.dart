@@ -171,8 +171,6 @@ class _HomeScreenState extends State<HomeScreen> {
           eventHistory: _eventHistory,
         );
       case 2:
-        return _buildNotificationTab();
-      case 3:
         return SettingsScreen(
           settingsService: widget.settingsService,
           sseService: widget.sseService,
@@ -469,43 +467,6 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildNotificationTab() {
-    return SingleChildScrollView(
-      padding: EdgeInsets.only(left: 20, right: 20, top: MediaQuery.of(context).padding.top + 16, bottom: 120),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            '알림',
-            style: TextStyle(fontSize: 21, fontWeight: FontWeight.bold, color: Color(0xFFE2E8F0)),
-          ),
-          const SizedBox(height: 20),
-          if (_eventHistory.isEmpty)
-            Container(
-              padding: const EdgeInsets.all(40),
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E2535),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                children: [
-                  Icon(Icons.notifications_none, size: 48, color: Colors.white.withValues(alpha: 0.3)),
-                  const SizedBox(height: 12),
-                  const Text('알림이 없습니다', style: TextStyle(fontSize: 16, color: Color(0xFF9CA3AF))),
-                ],
-              ),
-            )
-          else
-            ...(_eventHistory.take(20).map((e) => Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: _buildEventCard(e),
-            ))),
-        ],
-      ),
-    );
-  }
-
   Widget _buildBottomNav() {
     return Container(
       decoration: const BoxDecoration(
@@ -521,8 +482,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           _buildNavItem(Icons.home_outlined, '홈', 0),
           _buildNavItem(Icons.access_time, '이력', 1),
-          _buildNavItem(Icons.notifications_outlined, '알림', 2),
-          _buildNavItem(Icons.settings_outlined, '설정', 3),
+          _buildNavItem(Icons.settings_outlined, '설정', 2),
         ],
       ),
     );

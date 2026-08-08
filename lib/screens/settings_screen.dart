@@ -131,75 +131,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 24),
           // Notification Settings
           _buildSectionTitle('알림 설정'),
+          const SizedBox(height: 4),
+          const Text(
+            '이벤트 종류마다 플래시·진동·소리를 원하는 조합으로 켜고 끌 수 있어요.',
+            style: TextStyle(fontSize: 14, color: Color(0xFF6B7280)),
+          ),
           const SizedBox(height: 12),
-          _buildToggleTile(
-            icon: Icons.flash_on,
-            iconColor: const Color(0xFFFACC15),
-            title: '플래시 점멸',
-            subtitle: '위협/화재 시 후면 플래시 점멸',
-            value: widget.settingsService.flashEnabled,
-            onChanged: (v) {
-              setState(() => widget.settingsService.flashEnabled = v);
-            },
-          ),
-          const SizedBox(height: 8),
-          _buildToggleTile(
-            icon: Icons.waves,
-            iconColor: const Color(0xFFA78BFA),
-            title: '햅틱 진동',
-            subtitle: '이벤트 유형별 진동 패턴',
-            value: widget.settingsService.hapticEnabled,
-            onChanged: (v) {
-              setState(() => widget.settingsService.hapticEnabled = v);
-            },
-          ),
-          const SizedBox(height: 8),
-          _buildToggleTile(
-            icon: Icons.volume_up,
-            iconColor: const Color(0xFF3B82F6),
-            title: '소리 알림',
-            subtitle: '이벤트 유형별 알림음 재생',
-            value: widget.settingsService.soundEnabled,
-            onChanged: (v) {
-              setState(() => widget.settingsService.soundEnabled = v);
-            },
-          ),
-          if (widget.settingsService.soundEnabled) ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFF1E2535),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        '볼륨',
-                        style: TextStyle(fontSize: 16, color: Color(0xFFE2E8F0)),
-                      ),
-                      Text(
-                        '${(widget.settingsService.volume * 100).toInt()}%',
-                        style: const TextStyle(fontSize: 16, color: Color(0xFF3B82F6)),
-                      ),
-                    ],
-                  ),
-                  Slider(
-                    value: widget.settingsService.volume,
-                    onChanged: (v) {
-                      setState(() => widget.settingsService.volume = v);
-                    },
-                    activeColor: const Color(0xFF3B82F6),
-                    inactiveColor: const Color(0xFF2A2A3D),
-                  ),
-                ],
-              ),
+          ...SettingsService.alertEventTypes.map(
+            (type) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: _buildEventAlertCard(type),
             ),
-          ],
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E2535),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    const Text(
+                      '소리 볼륨 (공통)',
+                      style: TextStyle(fontSize: 16, color: Color(0xFFE2E8F0)),
+                    ),
+                    Text(
+                      '${(widget.settingsService.volume * 100).toInt()}%',
+                      style: const TextStyle(fontSize: 16, color: Color(0xFF3B82F6)),
+                    ),
+                  ],
+                ),
+                Slider(
+                  value: widget.settingsService.volume,
+                  onChanged: (v) {
+                    setState(() => widget.settingsService.volume = v);
+                  },
+                  activeColor: const Color(0xFF3B82F6),
+                  inactiveColor: const Color(0xFF2A2A3D),
+                ),
+              ],
+            ),
+          ),
           const SizedBox(height: 24),
           // App Info
           _buildSectionTitle('앱 정보'),
@@ -237,49 +214,104 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  Widget _buildToggleTile({
-    required IconData icon,
-    required Color iconColor,
-    required String title,
-    required String subtitle,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) {
+  /// 이벤트 타입 하나에 대한 플래시/진동/소리 조합 설정 카드
+  Widget _buildEventAlertCard(EventType type) {
+    final config = widget.settingsService.alertConfigFor(type);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFF1E2535),
         borderRadius: BorderRadius.circular(12),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: iconColor.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, size: 20, color: iconColor),
+          Row(
+            children: [
+              Text(type.emoji, style: const TextStyle(fontSize: 18)),
+              const SizedBox(width: 8),
+              Text(
+                type.displayName,
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Color(0xFFE2E8F0)),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Color(0xFFE2E8F0))),
-                Text(subtitle, style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF))),
-              ],
-            ),
-          ),
-          Switch(
-            value: value,
-            onChanged: onChanged,
-            activeThumbColor: const Color(0xFF3B82F6),
-            activeTrackColor: const Color(0xFF3B82F6).withValues(alpha: 0.3),
-            inactiveThumbColor: const Color(0xFF6B7280),
-            inactiveTrackColor: const Color(0xFF2A2A3D),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _buildChannelChip(
+                icon: Icons.flash_on,
+                label: '플래시',
+                selected: config.flash,
+                onTap: () {
+                  setState(() {
+                    widget.settingsService.setAlertConfigFor(type, config.copyWith(flash: !config.flash));
+                  });
+                },
+              ),
+              _buildChannelChip(
+                icon: Icons.waves,
+                label: '진동',
+                selected: config.haptic,
+                onTap: () {
+                  setState(() {
+                    widget.settingsService.setAlertConfigFor(type, config.copyWith(haptic: !config.haptic));
+                  });
+                },
+              ),
+              _buildChannelChip(
+                icon: Icons.volume_up,
+                label: '소리',
+                selected: config.sound,
+                onTap: () {
+                  setState(() {
+                    widget.settingsService.setAlertConfigFor(type, config.copyWith(sound: !config.sound));
+                  });
+                },
+              ),
+            ],
           ),
         ],
+      ),
+    );
+  }
+
+  /// 켜기/끄기가 가능한 알림 채널 칩 (플래시/진동/소리 공용)
+  Widget _buildChannelChip({
+    required IconData icon,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    const activeColor = Color(0xFF3B82F6);
+    const inactiveColor = Color(0xFF6B7280);
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: selected ? activeColor.withValues(alpha: 0.15) : const Color(0xFF0A0A14),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: selected ? activeColor : const Color(0xFF2A2A3D)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 16, color: selected ? activeColor : inactiveColor),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                color: selected ? activeColor : inactiveColor,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

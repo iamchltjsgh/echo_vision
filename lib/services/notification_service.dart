@@ -18,16 +18,17 @@ class NotificationService {
   Future<void> triggerAlert(EventModel event) async {
     if (!event.requiresAlert) return;
 
-    // 설정값에 따라 독립적으로 알림 실행
+    // 이벤트 타입별로 사용자가 설정한 채널만 독립적으로 실행
+    final config = _settings.alertConfigFor(event.eventType);
     final futures = <Future>[];
 
-    if (_settings.soundEnabled) {
+    if (config.sound) {
       futures.add(_playSound(event.eventType));
     }
-    if (_settings.hapticEnabled) {
+    if (config.haptic) {
       futures.add(_triggerHaptic(event.eventType));
     }
-    if (_settings.flashEnabled) {
+    if (config.flash) {
       futures.add(_triggerFlash(event.eventType));
     }
 
@@ -40,7 +41,8 @@ class NotificationService {
       // 볼륨 설정
       await _audioPlayer.setVolume(_settings.volume);
 
-      String assetPath;
+      // UNKNOWN 등 전용 음원이 없는 타입은 기기 기본 알림음으로 대체
+      String? assetPath;
       switch (type) {
         case EventType.knock:
           assetPath = 'sounds/knock.mp3';
@@ -55,15 +57,21 @@ class NotificationService {
           assetPath = 'sounds/emergency.mp3';
           break;
         default:
-          return;
+          assetPath = null;
       }
 
       try {
-        await _audioPlayer.play(AssetSource(assetPath));
+        if (assetPath != null) {
+          await _audioPlayer.play(AssetSource(assetPath));
+        } else {
+          // System default notification sound fallback
+          await _audioPlayer.play(
+            UrlSource('content://settings/system/notification_sound'),
+          );
+        }
       } catch (e) {
         // mp3 파일이 없으면 시스템 기본 알림음으로 대체
         debugPrint('알림음 파일 없음, 기본음 사용: $e');
-        // System default notification sound fallback
         await _audioPlayer.play(
           UrlSource('content://settings/system/notification_sound'),
         );
@@ -76,7 +84,7 @@ class NotificationService {
   /// 햅틱 진동 실행
   Future<void> _triggerHaptic(EventType type) async {
     try {
-      final hasVibrator = await Vibration.hasVibrator() ?? false;
+      final hasVibrator = await Vibration.hasVibrator();
       if (!hasVibrator) return;
 
       switch (type) {
@@ -98,6 +106,10 @@ class NotificationService {
             pattern: [0, 300, 100, 300, 100, 300, 100, 300, 100, 300],
           );
           break;
+        case EventType.unknown:
+          // 미분류(anonymous) 소리: 중간 세기 1번
+          await Vibration.vibrate(pattern: [0, 400]);
+          break;
         default:
           break;
       }
@@ -111,9 +123,22 @@ class NotificationService {
     try {
       switch (type) {
         case EventType.knock:
+          // 짧게 1회 점멸
+          await TorchLight.enableTorch();
+          await Future.delayed(const Duration(milliseconds: 200));
+          await TorchLight.disableTorch();
+          break;
         case EventType.doorbell:
-          // KNOCK/DOORBELL은 플래시 없음
-          return;
+          // 짧게 2회 점멸
+          for (int i = 0; i < 2; i++) {
+            await TorchLight.enableTorch();
+            await Future.delayed(const Duration(milliseconds: 200));
+            await TorchLight.disableTorch();
+            if (i < 1) {
+              await Future.delayed(const Duration(milliseconds: 150));
+            }
+          }
+          break;
         case EventType.impact:
           // 500ms 점멸 1회
           await TorchLight.enableTorch();
@@ -130,6 +155,12 @@ class NotificationService {
               await Future.delayed(const Duration(milliseconds: 100));
             }
           }
+          break;
+        case EventType.unknown:
+          // 미분류(anonymous) 소리: 노크보다 약간 긴 1회 점멸
+          await TorchLight.enableTorch();
+          await Future.delayed(const Duration(milliseconds: 300));
+          await TorchLight.disableTorch();
           break;
         default:
           break;
