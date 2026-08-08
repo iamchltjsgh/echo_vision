@@ -1,12 +1,30 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'models/event_model.dart';
 import 'services/sse_service.dart';
 import 'services/notification_service.dart';
 import 'services/tflite_service.dart';
 import 'services/settings_service.dart';
 import 'services/history_service.dart';
 import 'screens/home_screen.dart';
+import 'screens/event_screen.dart';
+
+/// 알림을 탭했을 때 이동할 화면을 위해 전역 Navigator에 접근하는 키.
+/// 알림 콜백(특히 백그라운드/콜드스타트)에는 특정 위젯의 BuildContext가 없으므로
+/// 이 키로 대신 화면을 띄운다.
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+
+final FlutterLocalNotificationsPlugin _localNotifications =
+    FlutterLocalNotificationsPlugin();
+
+/// 알림이 백그라운드(앱이 안 떠 있는 상태)에서 탭됐을 때 호출되는 최상위 콜백.
+/// 실제 화면 이동은 콜드스타트 시 main()의 getNotificationAppLaunchDetails()가
+/// 처리한다(그때 비로소 위젯 트리/Navigator가 생기므로) — 여기서는 할 일이 없다.
+@pragma('vm:entry-point')
+void _notificationTapBackground(NotificationResponse response) {}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,13 +47,24 @@ void main() async {
   final tfliteService = TFLiteService();
   await tfliteService.init();
 
+  await _initLocalNotifications();
+  _initForegroundTask();
+
   final sseService = SSEService();
   sseService.setServerUrl(settingsService.serverUrl);
 
   final notificationService = NotificationService(settingsService);
   final historyService = HistoryService();
 
-  sseService.connect();
+  await sseService.connect();
+
+  // 알림을 탭해서 앱이 콜드스타트된 경우 어떤 이벤트였는지 미리 확인해둔다.
+  // 아직 위젯 트리가 없어서 지금 당장은 화면을 못 띄우니, runApp 이후 첫 프레임으로 미룬다.
+  final launchDetails = await _localNotifications
+      .getNotificationAppLaunchDetails();
+  final launchEventId = (launchDetails?.didNotificationLaunchApp ?? false)
+      ? launchDetails!.notificationResponse?.payload
+      : null;
 
   runApp(
     EchoVisionApp(
@@ -44,6 +73,81 @@ void main() async {
       notificationService: notificationService,
       tfliteService: tfliteService,
       historyService: historyService,
+    ),
+  );
+
+  if (launchEventId != null) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      openEventFromNotification(launchEventId);
+    });
+  }
+}
+
+/// 알림 payload(eventId)로 로컬 이력(HistoryService — 백그라운드 isolate가
+/// 이벤트를 받을 때마다 저장해둔 것)에서 이벤트를 찾아 상세 화면(팝업)을 띄운다.
+/// 알림 탭(포그라운드)과 콜드스타트 양쪽에서 공용으로 쓴다.
+Future<void> openEventFromNotification(String? eventId) async {
+  if (eventId == null) return;
+
+  final history = await HistoryService().load();
+  EventModel? event;
+  for (final e in history) {
+    if (e.eventId == eventId) {
+      event = e;
+      break;
+    }
+  }
+  if (event == null) return;
+
+  final context = navigatorKey.currentContext;
+  if (context == null) return;
+  // navigatorKey.currentContext는 await 이후 방금 새로 읽은 "지금" 값이라
+  // (위젯 State가 들고 있는 캡처된 context와 달리) stale해질 수 없다.
+  showDialog(
+    // ignore: use_build_context_synchronously
+    context: context,
+    barrierDismissible: false,
+    builder: (_) => EventScreen(event: event!),
+  );
+}
+
+Future<void> _initLocalNotifications() async {
+  const androidSettings = AndroidInitializationSettings('ic_notification');
+  await _localNotifications.initialize(
+    settings: const InitializationSettings(android: androidSettings),
+    onDidReceiveNotificationResponse: (response) {
+      openEventFromNotification(response.payload);
+    },
+    onDidReceiveBackgroundNotificationResponse: _notificationTapBackground,
+  );
+}
+
+/// 백그라운드(앱 종료 상태 포함) 감시를 위한 Foreground Service 설정.
+/// 실제 태스크 핸들러는 lib/services/background_sse_handler.dart 참고.
+void _initForegroundTask() {
+  FlutterForegroundTask.init(
+    androidNotificationOptions: AndroidNotificationOptions(
+      channelId: 'echo_vision_watch',
+      channelName: 'Echo Vision 감시',
+      channelDescription: '백그라운드에서 현관 이벤트를 감시하는 동안 표시됩니다.',
+      channelImportance: NotificationChannelImportance.LOW,
+      priority: NotificationPriority.LOW,
+      iconData: const NotificationIconData(
+        resType: ResourceType.mipmap,
+        resPrefix: ResourcePrefix.ic,
+        name: 'launcher',
+      ),
+    ),
+    iosNotificationOptions: const IOSNotificationOptions(),
+    foregroundTaskOptions: const ForegroundTaskOptions(
+      // 주기적으로 할 일이 없어서(연결은 TaskHandler.onStart에서 한 번 시작하면
+      // 알아서 재시도 루프를 도니까) onRepeatEvent는 안 쓴다 — 한 번만.
+      interval: 60000,
+      isOnceEvent: true,
+      autoRunOnBoot: true,
+      autoRunOnMyPackageReplaced: true,
+      allowWakeLock: true,
+      allowWifiLock: true,
     ),
   );
 }
@@ -92,6 +196,7 @@ class EchoVisionApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Echo Vision',
       debugShowCheckedModeBanner: false,
       scrollBehavior:

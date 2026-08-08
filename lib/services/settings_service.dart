@@ -38,8 +38,11 @@ class EventAlertConfig {
 class SettingsService {
   static const String _keyAlertConfig = 'event_alert_config';
   static const String _keyVolume = 'volume';
-  static const String _keyServerUrl = 'server_url';
-  static const String _defaultServerUrl = 'http://10.91.157.5:5000';
+  static const String _keyBatteryPromptShown = 'battery_optimization_prompt_shown';
+
+  /// SharedPreferences 키. background_sse_handler.dart도 같은 서버 URL을 읽어야 해서 공개.
+  static const String keyServerUrl = 'server_url';
+  static const String defaultServerUrl = 'http://10.91.157.5:5000';
 
   /// 알림을 설정할 수 있는 이벤트 타입 (NORMAL은 requiresAlert가 false라 제외)
   static const List<EventType> alertEventTypes = [
@@ -107,6 +110,11 @@ class SettingsService {
   set volume(double value) => _prefs?.setDouble(_keyVolume, value);
 
   /// 서버 URL (기본값: http://192.168.0.100:5000)
-  String get serverUrl => _prefs?.getString(_keyServerUrl) ?? _defaultServerUrl;
-  set serverUrl(String value) => _prefs?.setString(_keyServerUrl, value);
+  String get serverUrl => _prefs?.getString(keyServerUrl) ?? defaultServerUrl;
+  set serverUrl(String value) => _prefs?.setString(keyServerUrl, value);
+
+  /// 배터리 최적화 제외 안내를 이미 한 번 보여줬는지 (최초 1회만 자동으로 뜨게 하기 위함).
+  /// 나중에 다시 허용하고 싶으면 설정 탭의 "백그라운드 감시" 섹션에서 언제든 가능.
+  bool get batteryPromptShown => _prefs?.getBool(_keyBatteryPromptShown) ?? false;
+  set batteryPromptShown(bool value) => _prefs?.setBool(_keyBatteryPromptShown, value);
 }

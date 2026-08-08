@@ -82,37 +82,19 @@ class NotificationService {
   }
 
   /// 햅틱 진동 실행
+  /// 패턴은 EventType.vibrationPattern에 정의돼 있다 — 백그라운드 시스템 알림의
+  /// 진동 패턴과 같은 소스를 쓴다(둘이 따로 관리되면서 슬금슬금 달라지는 걸 방지).
   Future<void> _triggerHaptic(EventType type) async {
     try {
       final hasVibrator = await Vibration.hasVibrator();
       if (!hasVibrator) return;
 
-      switch (type) {
-        case EventType.knock:
-          // 짧게 3번: [대기, 진동, 대기, 진동, 대기, 진동]
-          await Vibration.vibrate(pattern: [0, 200, 100, 200, 100, 200]);
-          break;
-        case EventType.doorbell:
-          // 짧게 2번
-          await Vibration.vibrate(pattern: [0, 300, 150, 300]);
-          break;
-        case EventType.impact:
-          // 길게 강하게 1초
-          await Vibration.vibrate(duration: 1000, amplitude: 255);
-          break;
-        case EventType.emergency:
-          // 연속 5회 반복 [300ms ON, 100ms OFF]
-          await Vibration.vibrate(
-            pattern: [0, 300, 100, 300, 100, 300, 100, 300, 100, 300],
-          );
-          break;
-        case EventType.unknown:
-          // 미분류(anonymous) 소리: 중간 세기 1번
-          await Vibration.vibrate(pattern: [0, 400]);
-          break;
-        default:
-          break;
-      }
+      await Vibration.vibrate(
+        pattern: type.vibrationPattern,
+        // 위협 감지는 강도를 최대로 (기기가 강도 조절을 지원하지 않으면 무시됨).
+        // intensities는 pattern과 길이가 같아야 하고, 대기 구간은 0.
+        intensities: type == EventType.impact ? const [0, 255] : const [],
+      );
     } catch (e) {
       debugPrint('햅틱 진동 오류: $e');
     }

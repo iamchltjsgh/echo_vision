@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- flutter_local_notifications는 알림 아이콘을 drawable 타입 리소스로만 찾는다
+     (mipmap은 별개 리소스 타입이라 직접 못 씀). 새 이미지 없이 기존 런처 아이콘을
+     drawable로 alias한다. -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:src="@mipmap/ic_launcher" />

@@ -66,6 +66,8 @@ def stream():
         q: queue.Queue = queue.Queue()
         with _lock:
             _subscribers.add(q)
+            count = len(_subscribers)
+        print(f"[SSE] 클라이언트 연결 (현재 {count}개)", flush=True)
         try:
             yield f"data: {json.dumps({'type': 'connected'})}\n\n"
             while True:
@@ -76,6 +78,8 @@ def stream():
         finally:
             with _lock:
                 _subscribers.discard(q)
+                count = len(_subscribers)
+            print(f"[SSE] 클라이언트 해제 (현재 {count}개)", flush=True)
 
     return Response(
         gen(),

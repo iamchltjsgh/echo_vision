@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 /// 이벤트 타입 열거형
 /// 값은 Flask 서버(app.py / app_v2.py)의 sound_type과 1:1로 맞춘다.
 /// (오디오 AI가 KNOCK/DOORBELL/IMPACT/EMERGENCY/NORMAL/UNKNOWN 중 하나로 분류해 보냄)
@@ -59,6 +61,32 @@ enum EventType {
         return '✅';
       case EventType.unknown:
         return '❓';
+    }
+  }
+
+  /// 진동 패턴 (ms, [대기, 진동, 대기, 진동...]).
+  /// 인앱 알림(NotificationService)과 백그라운드 시스템 알림(background_sse_handler)이
+  /// 같은 숫자를 쓰도록 여기 한 곳에만 정의한다.
+  Int64List get vibrationPattern {
+    switch (this) {
+      case EventType.knock:
+        // 짧게 3번
+        return Int64List.fromList([0, 200, 100, 200, 100, 200]);
+      case EventType.doorbell:
+        // 짧게 2번
+        return Int64List.fromList([0, 300, 150, 300]);
+      case EventType.impact:
+        // 길게 강하게 1초
+        return Int64List.fromList([0, 1000]);
+      case EventType.emergency:
+        // 연속 5회 반복
+        return Int64List.fromList(
+          [0, 300, 100, 300, 100, 300, 100, 300, 100, 300],
+        );
+      case EventType.normal:
+      case EventType.unknown:
+        // 미분류(anonymous) 소리: 중간 세기 1번
+        return Int64List.fromList([0, 400]);
     }
   }
 }

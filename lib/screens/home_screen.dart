@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import '../models/event_model.dart';
 import '../services/sse_service.dart';
 import '../services/notification_service.dart';
@@ -44,6 +45,9 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _isConnected = widget.sseService.isConnected;
     _loadHistory();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybePromptBatteryOptimization();
+    });
 
     _connectionSubscription = widget.sseService.connectionStream.listen((connected) {
       if (mounted) setState(() => _isConnected = connected);
@@ -63,17 +67,19 @@ class _HomeScreenState extends State<HomeScreen> {
           _lastEvent!.loiterConfirmed = true;
         }
       });
-      widget.historyService.save(_eventHistory);
+      // 저장은 안 함 — 백그라운드 isolate(background_sse_handler.dart)가 같은 이벤트를
+      // 받아서 이미 영구저장까지 했다. 여기서 또 read-modify-write 하면 서로 다른
+      // 시점에 읽은 리스트를 덮어써서 최신 항목이 사라지는 경합이 생긴다.
     });
 
     _eventSubscription = widget.sseService.eventStream.listen((event) async {
       if (!mounted) return;
       setState(() {
         _lastEvent = event;
+        // 화면 표시용으로만 낙관적 추가 — 영구저장은 백그라운드 isolate 전담(위 참고).
         _eventHistory.insert(0, event);
         if (_eventHistory.length > 50) _eventHistory.removeLast();
       });
-      widget.historyService.save(_eventHistory);
 
       if (!event.bypassVision && event.image != null) {
         final bytes = await widget.sseService.downloadSnapshot(event.image!);
@@ -109,6 +115,46 @@ class _HomeScreenState extends State<HomeScreen> {
       _eventHistory.addAll(saved);
       _lastEvent ??= saved.first;
     });
+  }
+
+  /// 앱을 처음 켰을 때 딱 한 번, 배터리 최적화 제외를 안내한다.
+  /// 이걸 안 해두면 기기가 백그라운드 감시 서비스를 강제로 죽일 수 있어서
+  /// (특히 앱을 완전히 종료한 상태에서) 핵심 기능이 조용히 멈출 수 있다.
+  /// "나중에"를 눌러도 설정 탭 > 백그라운드 감시에서 언제든 다시 허용 가능.
+  Future<void> _maybePromptBatteryOptimization() async {
+    if (widget.settingsService.batteryPromptShown) return;
+    if (await FlutterForegroundTask.isIgnoringBatteryOptimizations) {
+      widget.settingsService.batteryPromptShown = true;
+      return;
+    }
+    if (!mounted) return;
+
+    widget.settingsService.batteryPromptShown = true;
+    await showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E2535),
+        title: const Text('배터리 최적화 제외', style: TextStyle(color: Color(0xFFE2E8F0))),
+        content: const Text(
+          '기기가 앱을 강제로 꺼버리면 완전히 종료한 상태에서는 알림이 오지 않을 수 있어요. '
+          '배터리 최적화에서 Echo Vision을 제외해주세요.',
+          style: TextStyle(color: Color(0xFF9CA3AF)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('나중에', style: TextStyle(color: Color(0xFF6B7280))),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              FlutterForegroundTask.requestIgnoreBatteryOptimization();
+            },
+            child: const Text('허용하기', style: TextStyle(color: Color(0xFF3B82F6))),
+          ),
+        ],
+      ),
+    );
   }
 
   @override

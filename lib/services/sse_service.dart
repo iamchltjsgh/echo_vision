@@ -1,17 +1,27 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:http/http.dart' as http;
 import '../models/event_model.dart';
+import 'background_sse_handler.dart';
 
-/// SSE (Server-Sent Events) 서비스
-/// Flask 서버(app.py/app_v2.py)와 SSE 연결을 유지하고 이벤트를 수신합니다.
+/// SSE(Server-Sent Events) 서비스 — UI(메인) isolate 쪽 파사드.
 ///
-/// 서버가 보내는 메시지 3종류 (data 필드 JSON의 "type"):
+/// 실제 /stream 연결은 더 이상 여기서 열지 않는다. background_sse_handler.dart의
+/// Foreground Service TaskHandler가 앱이 꺼져 있어도 항상 연결을 유지하고,
+/// 이 클래스는 그 TaskHandler가 sendPort로 릴레이해주는 이벤트/연결상태를 받아
+/// 기존과 동일한 eventStream/loiterStream/connectionStream API로 흘려보내는 역할만 한다.
+/// (연결을 UI/백그라운드 두 군데서 각자 열면 서버에 기기당 연결이 2개씩 생기고
+/// 이벤트도 중복 처리되므로, 백그라운드 isolate가 유일한 소유자다.)
+///
+/// 서버가 보내는 메시지 3종류 (data 필드 JSON의 "type", background_sse_handler가 그대로 릴레이):
 ///   connected        - 연결 직후 1회, 무시(연결 확인용)
 ///   new_event        - 새 이벤트 발생 → eventStream으로 전달 (알림 트리거)
 ///   loiter_confirmed - v2 전용. 체류 확인 결과 동기화 → loiterStream으로 전달
-///                       (v1 서버에는 이 메시지가 오지 않으므로 자연히 안 쓰임)
+/// 그 외 "_connection_status"는 서버가 아니라 TaskHandler 자신이 만들어 보내는
+/// 합성 메시지로, connectionStream 갱신에만 쓰인다.
 class SSEService {
   final StreamController<EventModel> _eventController =
       StreamController<EventModel>.broadcast();
@@ -20,10 +30,10 @@ class SSEService {
   final StreamController<bool> _connectionController =
       StreamController<bool>.broadcast();
 
-  http.Client? _client;
   bool _isConnected = false;
-  bool _shouldReconnect = true;
   String _serverUrl = 'http://10.91.157.5:5000';
+  ReceivePort? _receivePort;
+  StreamSubscription? _portSubscription;
 
   /// 새 이벤트 스트림 (알림 트리거용)
   Stream<EventModel> get eventStream => _eventController.stream;
@@ -42,96 +52,67 @@ class SSEService {
     _serverUrl = url;
   }
 
-  /// SSE 연결 시작
+  /// 백그라운드 감시 서비스를 시작하고 릴레이를 구독한다.
+  /// 이미 떠 있어도 안전하게 멈췄다가 새로 시작한다 — 서버 URL을 바꾼 뒤
+  /// 재연결하는 경우도 이 한 경로로 처리된다(연결 로직은 TaskHandler.onStart에서
+  /// 매번 서버 URL을 새로 읽으므로, 서비스를 새로 시작하기만 하면 됨).
   Future<void> connect() async {
-    _shouldReconnect = true;
-    await _startConnection();
+    await _attachRelay();
+    await FlutterForegroundTask.stopService();
+    await FlutterForegroundTask.startService(
+      notificationTitle: 'Echo Vision 감시 중',
+      notificationText: '현관 이벤트를 실시간으로 감지하고 있어요',
+      callback: sseServiceCallback,
+    );
   }
 
-  /// SSE 연결 종료
+  /// 백그라운드 감시 서비스 종료
   void disconnect() {
-    _shouldReconnect = false;
-    _client?.close();
-    _client = null;
+    FlutterForegroundTask.stopService();
     _updateConnectionStatus(false);
   }
 
-  /// SSE 연결 실행
-  Future<void> _startConnection() async {
-    if (_isConnected) return;
+  /// TaskHandler의 릴레이 포트를 (다시) 구독한다.
+  /// FlutterForegroundTask.receivePort는 부를 때마다 새 포트를 등록해주므로,
+  /// 앱이 완전히 새로 시작될 때(콜드스타트) 이전 isolate가 쓰던 죽은 포트 참조를
+  /// 안 쓰고 항상 새 포트를 받게 된다.
+  Future<void> _attachRelay() async {
+    await _portSubscription?.cancel();
+    _receivePort = FlutterForegroundTask.receivePort;
+    _portSubscription = _receivePort?.listen(_handleRelayMessage);
 
-    try {
-      _client = http.Client();
-      // 서버(app.py/app_v2.py) 실제 경로는 /stream (v1/v2 동일)
-      final request = http.Request('GET', Uri.parse('$_serverUrl/stream'));
-      request.headers['Accept'] = 'text/event-stream';
-      request.headers['Cache-Control'] = 'no-cache';
-
-      final response = await _client!.send(request);
-
-      if (response.statusCode == 200) {
-        _updateConnectionStatus(true);
-
-        // SSE 스트림 파싱
-        String buffer = '';
-        await for (final chunk in response.stream.transform(utf8.decoder)) {
-          buffer += chunk;
-          // SSE 이벤트는 빈 줄로 구분
-          while (buffer.contains('\n\n')) {
-            final eventEnd = buffer.indexOf('\n\n');
-            final eventStr = buffer.substring(0, eventEnd);
-            buffer = buffer.substring(eventEnd + 2);
-            _parseSSEEvent(eventStr);
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint('SSE 연결 오류: $e');
-    } finally {
-      _updateConnectionStatus(false);
-      // 3초 후 자동 재연결
-      if (_shouldReconnect) {
-        await Future.delayed(const Duration(seconds: 3));
-        if (_shouldReconnect) {
-          await _startConnection();
-        }
-      }
+    // 서비스가 이 attach 이전부터 이미 돌고 있었을 수 있으니(예: 앱을 다시 켰을 때),
+    // TaskHandler가 저장해둔 마지막 연결 상태를 조회해서 배지에 바로 반영한다.
+    final savedConnected = await FlutterForegroundTask.getData<bool>(
+      key: 'is_connected',
+    );
+    if (savedConnected != null) {
+      _updateConnectionStatus(savedConnected);
     }
   }
 
-  /// SSE 이벤트 파싱
-  /// keepalive 주석(": keepalive")은 "data: "로 시작하지 않으므로 자동으로 무시된다.
-  void _parseSSEEvent(String eventStr) {
-    for (final line in eventStr.split('\n')) {
-      if (line.startsWith('data: ')) {
-        final jsonStr = line.substring(6).trim();
-        try {
-          final json = jsonDecode(jsonStr) as Map<String, dynamic>;
-          final type = json['type'] as String?;
-
-          switch (type) {
-            case 'new_event':
-              final event = EventModel.fromJson(json);
-              if (event.requiresAlert) {
-                _eventController.add(event);
-              }
-              break;
-            case 'loiter_confirmed':
-              // v2 전용. 이미 떠 있는 이벤트 카드의 체류확인 상태만 갱신하는 용도라
-              // 새 알림 팝업을 띄우지 않고 별도 스트림으로만 전달한다.
-              _loiterController.add(EventModel.fromJson(json));
-              break;
-            case 'connected':
-              // 연결 성공 확인용, 처리할 것 없음
-              break;
-            default:
-              // 알 수 없는 타입은 무시 (서버 쪽에 새 메시지 타입이 추가돼도 앱이 죽지 않도록)
-              break;
+  void _handleRelayMessage(dynamic message) {
+    if (message is! String) return;
+    try {
+      final json = jsonDecode(message) as Map<String, dynamic>;
+      switch (json['type']) {
+        case '_connection_status':
+          _updateConnectionStatus(json['connected'] as bool? ?? false);
+          break;
+        case 'new_event':
+          final event = EventModel.fromJson(json);
+          if (event.requiresAlert) {
+            _eventController.add(event);
           }
-        } catch (e) {
-          debugPrint('이벤트 파싱 오류: $e');
-        }
+          break;
+        case 'loiter_confirmed':
+          _loiterController.add(EventModel.fromJson(json));
+          break;
+        default:
+          break;
       }
+    } catch (e) {
+      debugPrint('릴레이 메시지 파싱 오류: $e');
     }
   }
 
@@ -189,7 +170,7 @@ class SSEService {
 
   /// 리소스 해제
   void dispose() {
-    disconnect();
+    _portSubscription?.cancel();
     _eventController.close();
     _loiterController.close();
     _connectionController.close();

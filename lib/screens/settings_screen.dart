@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/event_model.dart';
 import '../services/settings_service.dart';
 import '../services/sse_service.dart';
@@ -21,11 +23,20 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late TextEditingController _urlController;
+  final FlutterLocalNotificationsPlugin _notifications =
+      FlutterLocalNotificationsPlugin();
+  bool _ignoringBatteryOptimizations = false;
 
   @override
   void initState() {
     super.initState();
     _urlController = TextEditingController(text: widget.settingsService.serverUrl);
+    _refreshBatteryOptimizationStatus();
+  }
+
+  Future<void> _refreshBatteryOptimizationStatus() async {
+    final ignoring = await FlutterForegroundTask.isIgnoringBatteryOptimizations;
+    if (mounted) setState(() => _ignoringBatteryOptimizations = ignoring);
   }
 
   @override
@@ -92,7 +103,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           onSubmitted: (value) {
                             widget.settingsService.serverUrl = value;
                             widget.sseService.setServerUrl(value);
-                            widget.sseService.disconnect();
+                            // connect()가 이미 떠 있으면 멈췄다가 새로 시작하므로
+                            // disconnect()를 따로 부를 필요 없음.
                             widget.sseService.connect();
                           },
                         ),
@@ -103,7 +115,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       onTap: () {
                         widget.settingsService.serverUrl = _urlController.text;
                         widget.sseService.setServerUrl(_urlController.text);
-                        widget.sseService.disconnect();
                         widget.sseService.connect();
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
@@ -176,6 +187,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: 24),
+          // Background Watch Section
+          _buildSectionTitle('백그라운드 감시'),
+          const SizedBox(height: 4),
+          const Text(
+            '앱을 완전히 꺼도 알림이 오게 하려면 아래 두 가지를 허용해주세요.',
+            style: TextStyle(fontSize: 14, color: Color(0xFF6B7280)),
+          ),
+          const SizedBox(height: 12),
+          _buildActionRow(
+            icon: Icons.battery_saver,
+            iconColor: _ignoringBatteryOptimizations
+                ? const Color(0xFF4ADE80)
+                : const Color(0xFFFACC15),
+            title: '배터리 최적화 제외',
+            subtitle: _ignoringBatteryOptimizations
+                ? '허용됨 — 백그라운드 감시가 계속 유지돼요'
+                : '기기가 앱을 강제로 꺼버리지 않도록 허용해주세요',
+            buttonLabel: _ignoringBatteryOptimizations ? '완료' : '허용하기',
+            onTap: _ignoringBatteryOptimizations
+                ? null
+                : () async {
+                    await FlutterForegroundTask.requestIgnoreBatteryOptimization();
+                    await _refreshBatteryOptimizationStatus();
+                  },
+          ),
+          const SizedBox(height: 8),
+          _buildActionRow(
+            icon: Icons.warning_amber_rounded,
+            iconColor: const Color(0xFFEF4444),
+            title: '긴급 알림 잠금화면 표시',
+            subtitle: '화재 등 긴급 상황은 화면이 잠겨 있어도 바로 보이게 할 수 있어요',
+            buttonLabel: '허용하기',
+            onTap: () {
+              _notifications
+                  .resolvePlatformSpecificImplementation<
+                      AndroidFlutterLocalNotificationsPlugin>()
+                  ?.requestFullScreenIntentPermission();
+            },
           ),
           const SizedBox(height: 24),
           // App Info
@@ -312,6 +363,66 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// 상태 문구 + 허용 버튼 한 줄 (배터리 최적화 제외, 잠금화면 알림 등 온보딩용)
+  Widget _buildActionRow({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    required String buttonLabel,
+    required VoidCallback? onTap,
+  }) {
+    final done = onTap == null;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E2535),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 20, color: iconColor),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Color(0xFFE2E8F0))),
+                Text(subtitle, style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF))),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: onTap,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: done ? const Color(0xFF0A0A14) : const Color(0xFF3B82F6),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                buttonLabel,
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: done ? const Color(0xFF6B7280) : Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
