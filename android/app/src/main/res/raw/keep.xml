@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- flutter_local_notifications가 'ic_notification'을 문자열로만 참조해서
+     릴리스 빌드의 리소스 shrinker가 미사용으로 오판해 제거해버린다.
+     (release APK에서 알림 초기화가 invalid_icon 예외로 실패 -> runApp() 전에
+     main()이 멈춰 앱이 스플래시에서 뜨지 않는 원인이었음)
+     shrinker에게 이 리소스는 항상 유지하도록 명시한다. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_notification" />

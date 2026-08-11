@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/event_model.dart';
 import '../services/sse_service.dart';
+import 'event_screen.dart';
 
 class HistoryScreen extends StatelessWidget {
   final SSEService sseService;
@@ -101,50 +102,11 @@ class HistoryScreen extends StatelessWidget {
             ...eventHistory.map((event) {
               final borderColor = _getEventColor(event.eventType);
               final dt = DateTime.tryParse(event.timestamp) ?? DateTime.now();
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Container(
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF1E2535),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border(
-                      left: BorderSide(color: borderColor, width: 4),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Row(
-                        children: [
-                          Text(event.eventType.emoji, style: const TextStyle(fontSize: 20)),
-                          const SizedBox(width: 12),
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                event.eventType.displayName,
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: borderColor,
-                                ),
-                              ),
-                              Text(
-                                '신뢰도 ${(event.confidence * 100).toStringAsFixed(0)}%',
-                                style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF)),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                      Text(
-                        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}',
-                        style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
-                      ),
-                    ],
-                  ),
-                ),
+              return _HistoryEventTile(
+                sseService: sseService,
+                event: event,
+                borderColor: borderColor,
+                timestamp: dt,
               );
             }),
         ],
@@ -164,5 +126,107 @@ class HistoryScreen extends StatelessWidget {
       default:
         return const Color(0xFF3B82F6);
     }
+  }
+}
+
+/// 이력 리스트 한 항목. 탭하면 스냅샷을 보여준다.
+/// 스냅샷 바이트는 이력에 영구저장하지 않으므로(HistoryService 참고) event.image
+/// 파일명으로 서버에서 다시 받아온 뒤(아직 없을 때만), EventScreen을 그대로 재사용해 띄운다.
+class _HistoryEventTile extends StatefulWidget {
+  final SSEService sseService;
+  final EventModel event;
+  final Color borderColor;
+  final DateTime timestamp;
+
+  const _HistoryEventTile({
+    required this.sseService,
+    required this.event,
+    required this.borderColor,
+    required this.timestamp,
+  });
+
+  @override
+  State<_HistoryEventTile> createState() => _HistoryEventTileState();
+}
+
+class _HistoryEventTileState extends State<_HistoryEventTile> {
+  bool _loading = false;
+
+  Future<void> _open() async {
+    if (_loading) return;
+    final event = widget.event;
+    if (event.snapshotBytes == null && event.image != null) {
+      setState(() => _loading = true);
+      final bytes = await widget.sseService.downloadSnapshot(event.image!);
+      if (bytes != null) event.snapshotBytes = bytes;
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (_) => EventScreen(event: event),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: GestureDetector(
+        onTap: _open,
+        child: Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E2535),
+            borderRadius: BorderRadius.circular(12),
+            border: Border(
+              left: BorderSide(color: widget.borderColor, width: 4),
+            ),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Text(widget.event.eventType.emoji, style: const TextStyle(fontSize: 20)),
+                  const SizedBox(width: 12),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.event.eventType.displayName,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: widget.borderColor,
+                        ),
+                      ),
+                      Text(
+                        '신뢰도 ${(widget.event.confidence * 100).toStringAsFixed(0)}%',
+                        style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              _loading
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Color(0xFF9CA3AF),
+                      ),
+                    )
+                  : Text(
+                      '${widget.timestamp.hour.toString().padLeft(2, '0')}:${widget.timestamp.minute.toString().padLeft(2, '0')}',
+                      style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+                    ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
