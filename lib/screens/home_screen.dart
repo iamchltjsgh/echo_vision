@@ -253,6 +253,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return SettingsScreen(
           settingsService: widget.settingsService,
           sseService: widget.sseService,
+          historyService: widget.historyService,
           onTestEvent: _simulateEvent,
         );
       default:

@@ -3,18 +3,23 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import '../models/alert_presets.dart';
 import '../models/event_model.dart';
+import '../models/mask_region.dart';
+import '../services/history_service.dart';
 import '../services/settings_service.dart';
 import '../services/sse_service.dart';
+import 'install_mode_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   final SettingsService settingsService;
   final SSEService sseService;
+  final HistoryService historyService;
   final Function(EventType) onTestEvent;
 
   const SettingsScreen({
     super.key,
     required this.settingsService,
     required this.sseService,
+    required this.historyService,
     required this.onTestEvent,
   });
 
@@ -27,12 +32,40 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
   bool _ignoringBatteryOptimizations = false;
+  MaskRegionsStatus? _maskRegionsStatus;
+  bool _loadingMaskStatus = true;
 
   @override
   void initState() {
     super.initState();
     _urlController = TextEditingController(text: widget.settingsService.serverUrl);
     _refreshBatteryOptimizationStatus();
+    _refreshMaskRegionsStatus();
+  }
+
+  Future<void> _refreshMaskRegionsStatus() async {
+    setState(() => _loadingMaskStatus = true);
+    final status = await widget.sseService.getMaskRegionsStatus();
+    if (mounted) {
+      setState(() {
+        _maskRegionsStatus = status;
+        _loadingMaskStatus = false;
+      });
+    }
+  }
+
+  Future<void> _openInstallMode() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => InstallModeScreen(
+          sseService: widget.sseService,
+          historyService: widget.historyService,
+        ),
+      ),
+    );
+    // 재설정을 마치고(또는 그냥 뒤로 나가도) 최신 상태로 갱신 — 저장 여부와 무관하게
+    // 서버 값을 다시 조회하는 편이 낙관적 갱신보다 안전하다(저장 실패 케이스 포함).
+    _refreshMaskRegionsStatus();
   }
 
   Future<void> _refreshBatteryOptimizationStatus() async {
@@ -233,6 +266,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       AndroidFlutterLocalNotificationsPlugin>()
                   ?.requestFullScreenIntentPermission();
             },
+          ),
+          const SizedBox(height: 24),
+          // Neighbor Privacy Masking
+          _buildSectionTitle('이웃 프라이버시'),
+          const SizedBox(height: 4),
+          const Text(
+            '복도형 구조 등에서 이웃집 문이 함께 찍힌다면, 해당 영역을 가리도록 설정할 수 있어요.',
+            style: TextStyle(fontSize: 14, color: Color(0xFF6B7280)),
+          ),
+          const SizedBox(height: 12),
+          _buildActionRow(
+            icon: Icons.privacy_tip_outlined,
+            iconColor: (_maskRegionsStatus?.configured ?? false)
+                ? const Color(0xFF4ADE80)
+                : const Color(0xFF3B82F6),
+            title: '이웃 프라이버시 마스킹',
+            subtitle: _loadingMaskStatus
+                ? '상태 확인 중...'
+                : (_maskRegionsStatus?.configured ?? false)
+                    ? '${_maskRegionsStatus!.regionCount}개 영역 설정됨'
+                    : '설정 안 됨 (권장)',
+            buttonLabel: (_maskRegionsStatus?.configured ?? false) ? '재설정' : '설정하기',
+            onTap: _openInstallMode,
           ),
           const SizedBox(height: 24),
           // App Info
