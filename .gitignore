@@ -47,4 +47,5 @@ app.*.map.json
 # Local test Flask server
 /server/venv/
 /server/photos/*
+/server/mask_regions.json
 !/server/photos/.gitkeep

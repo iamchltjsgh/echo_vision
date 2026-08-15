@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:http/http.dart' as http;
 import '../models/event_model.dart';
+import '../models/mask_region.dart';
 import 'background_sse_handler.dart';
 
 /// SSE(Server-Sent Events) 서비스 — UI(메인) isolate 쪽 파사드.
@@ -166,6 +167,56 @@ class SSEService {
     } catch (e) {
       debugPrint('체류 확인 보고 실패(v1 서버는 정상): $e');
     }
+  }
+
+  /// 이웃 프라이버시 마스킹 영역 저장 (POST /device/mask-regions)
+  /// 좌표는 이미지 전체 대비 0.0~1.0 비율(설치 모드 화면 참고). 성공 여부만 반환.
+  Future<bool> saveMaskRegions(List<MaskRegion> regions) async {
+    try {
+      final response = await http.post(
+        Uri.parse('$_serverUrl/device/mask-regions'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'regions': regions.map((r) => r.toJson()).toList()}),
+      );
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('마스킹 영역 저장 오류: $e');
+      return false;
+    }
+  }
+
+  /// 저장된 마스킹 영역 조회 (GET /device/mask-regions) — 재설정 진입 시 기존 값을
+  /// 불러와 편집할 수 있게 하는 용도.
+  Future<List<MaskRegion>> getMaskRegions() async {
+    try {
+      final response = await http.get(Uri.parse('$_serverUrl/device/mask-regions'));
+      if (response.statusCode == 200) {
+        final json = jsonDecode(response.body) as Map<String, dynamic>;
+        final list = json['regions'] as List<dynamic>? ?? [];
+        return list
+            .map((e) => MaskRegion.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+    } catch (e) {
+      debugPrint('마스킹 영역 조회 오류: $e');
+    }
+    return [];
+  }
+
+  /// 마스킹 설정 상태 조회 (GET /device/mask-regions/status) — 설정 화면에 표시용.
+  Future<MaskRegionsStatus?> getMaskRegionsStatus() async {
+    try {
+      final response =
+          await http.get(Uri.parse('$_serverUrl/device/mask-regions/status'));
+      if (response.statusCode == 200) {
+        return MaskRegionsStatus.fromJson(
+          jsonDecode(response.body) as Map<String, dynamic>,
+        );
+      }
+    } catch (e) {
+      debugPrint('마스킹 설정 상태 조회 오류: $e');
+    }
+    return null;
   }
 
   /// 리소스 해제
