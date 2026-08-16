@@ -8,10 +8,17 @@ Flutter 앱(lib/services/sse_service.dart)이 기대하는 API:
   POST /events/<id>/loiter  - 체류 확인 보고 (v2 전용, 앱은 v1처럼 404 나도 무시함)
 
 이웃 프라이버시 마스킹 (앱의 설치 모드 화면이 좌표를 지정·저장, ESP32가 촬영 시점에
-적용 — 계약은 docs/mask-regions-contract.md 참고):
+적용 — 계약은 docs/mask-regions-contract.md 참고. 단, 영상은 예외 — 아래 참고):
   GET  /device/mask-regions         - 저장된 마스킹 영역 좌표 목록 (ESP32가 폴링)
   POST /device/mask-regions         - 마스킹 영역 좌표 저장 (앱의 설치 모드가 호출)
   GET  /device/mask-regions/status  - 설정 화면에 보여줄 요약 상태
+
+영상 (rev.4 섹션 4 — severity 3 이벤트 발생 시 기기가 최대 30분 내 비동기 업로드.
+사진과 달리 기기는 크롭·마스킹 없이 원본을 그대로 올리고, 서버가 mask_regions
+좌표를 프레임마다 적용한다 — 디코더 부담을 기기에서 서버로 옮기기 위함):
+  POST /upload/video      - MJPEG(.avi) 원본 업로드 → 서버가 프레임별 마스킹 후 저장,
+                             video_ready SSE 브로드캐스트 (원본은 처리 직후 즉시 삭제)
+  GET  /videos/<filename> - 마스킹 처리 완료된 영상만 서빙 (원본은 서빙 라우트 자체가 없음)
 
 기기 자가진단 (rev.4 섹션 5 — ESP32가 주기 보고, 앱 홈 화면 상단 배지가 조회):
   POST /heartbeat                - ESP32가 보내는 생존 4필드 + 자가진단 6필드(총 10개) 수신
@@ -35,11 +42,21 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import cv2
 from flask import Flask, Response, abort, jsonify, request, send_from_directory
 
 BASE_DIR = Path(__file__).resolve().parent
 PHOTOS_DIR = BASE_DIR / "photos"
 PHOTOS_DIR.mkdir(exist_ok=True)
+
+# 마스킹 처리 완료된 영상만 여기 저장되고, 이 디렉터리만 서빙된다(GET /videos/<name>).
+VIDEOS_DIR = BASE_DIR / "videos"
+VIDEOS_DIR.mkdir(exist_ok=True)
+# 기기가 올린 마스킹 전 원본의 임시 보관소. 서빙 라우트가 아예 없고, 처리
+# 완료·실패 여부와 무관하게 처리 직후 항상 삭제한다(docs/mask-regions-contract.md
+# 참고 — 마스킹 전 원본은 앱/외부에 절대 노출되면 안 된다).
+VIDEOS_RAW_TMP_DIR = BASE_DIR / "videos_raw_tmp"
+VIDEOS_RAW_TMP_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 
@@ -175,6 +192,58 @@ def _is_valid_mask_region(region: object) -> bool:
     return True
 
 
+def _mask_video_frames(src_path: Path, dst_path: Path, regions: list[dict]) -> int:
+    """src_path 영상의 모든 프레임에 regions(정규화 0.0~1.0 좌표)를 검은
+    사각형으로 적용해 dst_path에 새 파일로 인코딩한다. regions가 비어 있으면
+    마스킹 없이 그대로(재인코딩만) 저장한다 — mask-regions-contract.md의
+    "좌표 없으면 원본 그대로" 원칙을 사진과 동일하게 따른다.
+
+    반환값은 처리한 프레임 수(검증/로그용).
+    """
+    cap = cv2.VideoCapture(str(src_path))
+    if not cap.isOpened():
+        raise RuntimeError("영상을 열 수 없습니다 (지원하지 않는 포맷이거나 손상됨)")
+
+    try:
+        fps = cap.get(cv2.CAP_PROP_FPS) or 5.0
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        if width <= 0 or height <= 0:
+            raise RuntimeError("영상 해상도를 읽을 수 없습니다")
+
+        # 정규화 좌표 → 이번 영상의 실제 픽셀 좌표로 변환 (docs/mask-regions-contract.md
+        # "좌표계" 절과 동일한 변환식).
+        pixel_regions = [
+            (
+                round(r["x"] * width), round(r["y"] * height),
+                round((r["x"] + r["width"]) * width), round((r["y"] + r["height"]) * height),
+            )
+            for r in regions
+        ]
+
+        writer = cv2.VideoWriter(str(dst_path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
+        if not writer.isOpened():
+            raise RuntimeError("출력 영상을 생성할 수 없습니다")
+
+        try:
+            frame_count = 0
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                for x1, y1, x2, y2 in pixel_regions:
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), thickness=-1)
+                writer.write(frame)
+                frame_count += 1
+            if frame_count == 0:
+                raise RuntimeError("읽은 프레임이 0개입니다 (빈 영상이거나 디코딩 실패)")
+            return frame_count
+        finally:
+            writer.release()
+    finally:
+        cap.release()
+
+
 _load_mask_regions()  # 서버 시작 시 이전 저장값 복원
 
 
@@ -255,6 +324,15 @@ def photos(filename):
     if not (PHOTOS_DIR / filename).is_file():
         abort(404)
     return send_from_directory(PHOTOS_DIR, filename)
+
+
+@app.route("/videos/<path:filename>")
+def videos(filename):
+    """마스킹 처리 완료된 영상만 서빙한다. 처리 전 원본(videos_raw_tmp/)은
+    이 라우트가 절대 다루지 않는다 — 그 디렉터리를 가리키는 라우트 자체가 없다."""
+    if not (VIDEOS_DIR / filename).is_file():
+        abort(404)
+    return send_from_directory(VIDEOS_DIR, filename)
 
 
 @app.route("/events/<event_id>/loiter", methods=["POST"])
@@ -363,6 +441,62 @@ def trigger_video_ready():
         target["video_pending"] = False
 
     payload = {"type": "video_ready", "event_id": event_id, "video": video}
+    _broadcast(payload)
+    return jsonify(payload), 200
+
+
+@app.route("/upload/video", methods=["POST"])
+def upload_video():
+    """기기가 severity 3 이벤트 발생 후 최대 30분 내 비동기로 올리는 15초
+    분량 MJPEG(.avi) 영상 (rev.4 섹션 4).
+
+    기기는 크롭·마스킹을 하지 않고 원본을 그대로 올린다(사진과 동일한 이유로
+    디코더 부담을 서버로 옮긴 설계). 여기서 저장된 mask_regions 좌표를 모든
+    프레임에 동일하게 적용해 새 파일로 인코딩하고, 마스킹 전 원본은 처리
+    직후(성공·실패 무관) 항상 삭제한다 — 원본이 잠깐이라도 앱/외부에 노출되는
+    경로가 없어야 한다는 계약(docs/mask-regions-contract.md)을 영상에서도 지킨다.
+
+    curl 테스트 예시:
+      curl -X POST -F "event_id=abc123" -F "video=@clip.avi" http://localhost:5000/upload/video
+    """
+    event_id = request.form.get("event_id")
+    if not event_id:
+        return jsonify({"error": "event_id is required"}), 400
+
+    with _lock:
+        target = next((e for e in _events if e.get("event_id") == event_id), None)
+    if target is None:
+        return jsonify({"error": "not found"}), 404
+
+    if "video" not in request.files:
+        return jsonify({"error": "'video' 파일 필드가 없습니다"}), 400
+    file = request.files["video"]
+    if not file.filename:
+        return jsonify({"error": "파일명이 비어있습니다"}), 400
+
+    raw_path = VIDEOS_RAW_TMP_DIR / f"{event_id}_{uuid.uuid4().hex[:8]}.raw"
+    file.save(raw_path)
+
+    out_name = f"{event_id}.mp4"
+    out_path = VIDEOS_DIR / out_name
+
+    try:
+        with _mask_lock:
+            regions = list(_mask_regions)
+        frame_count = _mask_video_frames(raw_path, out_path, regions)
+    except Exception as e:
+        out_path.unlink(missing_ok=True)  # 실패 시 부분적으로 쓰인 출력 파일 정리
+        return jsonify({"error": f"영상 처리 실패: {e}"}), 500
+    finally:
+        raw_path.unlink(missing_ok=True)  # 마스킹 전 원본은 성공·실패와 무관하게 즉시 폐기
+
+    with _lock:
+        target["video"] = out_name
+        target["video_pending"] = False
+
+    print(f"[영상] {event_id} 마스킹 완료 (프레임 {frame_count}개, 마스킹 영역 {len(regions)}개)", flush=True)
+
+    payload = {"type": "video_ready", "event_id": event_id, "video": out_name}
     _broadcast(payload)
     return jsonify(payload), 200
 

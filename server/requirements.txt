@@ -1,1 +1,2 @@
 flask>=3.0
+opencv-python-headless>=4.9
