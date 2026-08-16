@@ -51,7 +51,7 @@ enum VibrationPreset {
   }
 }
 
-/// [blinkCount]번(EventType.flashBlinkCount) 점멸하는 (켜짐 시간, 꺼짐 시간) ms 목록을 만든다.
+/// [blinkCount]번(flashParamsForSeverity가 정함) 점멸하는 (켜짐 시간, 꺼짐 시간) ms 목록을 만든다.
 /// 꺼짐(간격)은 켜짐 시간의 절반으로 둔다.
 List<(int onMs, int offMs)> buildFlashBlinks(int blinkCount, FlashPreset preset) {
   final onMs = preset.blinkDurationMs;
@@ -59,7 +59,7 @@ List<(int onMs, int offMs)> buildFlashBlinks(int blinkCount, FlashPreset preset)
   return List.generate(blinkCount, (_) => (onMs, offMs));
 }
 
-/// [repeatCount]번(EventType.vibrationRepeatCount) 반복하는 진동 패턴을 만든다.
+/// [repeatCount]번(vibrationParamsForSeverity가 정함) 반복하는 진동 패턴을 만든다.
 /// vibration 패키지의 pattern 형식: [대기, 진동, 대기, 진동, ...] (첫 대기는 보통 0).
 /// continuousLong은 "반복"이라는 개념 자체가 없어서 repeatCount는 강도(길이) 힌트로만 쓴다.
 ///
@@ -87,4 +87,36 @@ List<int> _repeatingPattern(int repeatCount, {required int onMs, required int of
     if (i < repeatCount - 1) pattern.add(offMs);
   }
   return pattern;
+}
+
+/// rev.4: 진동/플래시의 "강도(반복 횟수·길이)"는 더 이상 사용자가 이벤트 타입별로
+/// 직접 고르지 않는다 — severity(0~3)가 자동으로 결정한다(리듬으로 심각도가
+/// 구분되는 게 핵심 — 안 보는 사이에도 "강한지 약한지"를 손끝으로 알 수 있게).
+/// 채널(플래시/진동/소리) 자체를 켤지 말지는 기존처럼 사용자 설정(EventAlertConfig)을
+/// 그대로 따르고, 여기서 나온 (preset, count)로 buildVibrationPattern/buildFlashBlinks를
+/// 호출해 실제 패턴을 만든다.
+(VibrationPreset preset, int repeatCount) vibrationParamsForSeverity(int severity) {
+  switch (severity) {
+    case 3:
+      return (VibrationPreset.longRepeat, 3);
+    case 2:
+      return (VibrationPreset.shortRepeat, 2);
+    case 1:
+      return (VibrationPreset.shortRepeat, 1);
+    default:
+      return (VibrationPreset.shortRepeat, 1);
+  }
+}
+
+(FlashPreset preset, int blinkCount) flashParamsForSeverity(int severity) {
+  switch (severity) {
+    case 3:
+      return (FlashPreset.long, 5);
+    case 2:
+      return (FlashPreset.normal, 3);
+    case 1:
+      return (FlashPreset.short, 1);
+    default:
+      return (FlashPreset.short, 1);
+  }
 }

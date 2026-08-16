@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import '../models/event_model.dart';
+import '../models/heartbeat_status.dart';
+import '../models/severity.dart';
 import '../services/sse_service.dart';
 import '../services/notification_service.dart';
 import '../services/tflite_service.dart';
@@ -40,6 +42,10 @@ class _HomeScreenState extends State<HomeScreen> {
   EventModel? _lastEvent;
   final List<EventModel> _eventHistory = [];
 
+  HeartbeatStatus? _heartbeat;
+  bool _loadingHeartbeat = true;
+  Timer? _heartbeatTimer;
+
   @override
   void initState() {
     super.initState();
@@ -48,6 +54,10 @@ class _HomeScreenState extends State<HomeScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybePromptBatteryOptimization();
     });
+
+    _refreshHeartbeat();
+    // 1~5분 간격 권장 범위 안에서 2분마다 폴링 — 홈 화면에 머무는 동안만.
+    _heartbeatTimer = Timer.periodic(const Duration(minutes: 2), (_) => _refreshHeartbeat());
 
     _connectionSubscription = widget.sseService.connectionStream.listen((connected) {
       if (mounted) setState(() => _isConnected = connected);
@@ -109,9 +119,18 @@ class _HomeScreenState extends State<HomeScreen> {
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (_) => EventScreen(event: event),
+          builder: (_) => EventScreen(event: event, sseService: widget.sseService),
         );
       }
+    });
+  }
+
+  Future<void> _refreshHeartbeat() async {
+    final status = await widget.sseService.getHeartbeatStatus();
+    if (!mounted) return;
+    setState(() {
+      _heartbeat = status;
+      _loadingHeartbeat = false;
     });
   }
 
@@ -194,14 +213,16 @@ class _HomeScreenState extends State<HomeScreen> {
     _eventSubscription?.cancel();
     _loiterSubscription?.cancel();
     _connectionSubscription?.cancel();
+    _heartbeatTimer?.cancel();
     super.dispose();
   }
 
-  void _simulateEvent(EventType type) async {
+  void _simulateEvent(EventType type, {int severity = 1}) async {
     final now = DateTime.now();
     final event = EventModel(
       eventType: type,
-      confidence: 0.10, // 임시값 (테스트 버튼용)
+      severity: severity,
+      confidence: 0.85, // 임시값 (테스트 버튼용)
       time: _formatTime(now),
       timestamp: now.toIso8601String(),
     );
@@ -215,7 +236,7 @@ class _HomeScreenState extends State<HomeScreen> {
       showDialog(
         context: context,
         barrierDismissible: false,
-        builder: (_) => EventScreen(event: event),
+        builder: (_) => EventScreen(event: event, sseService: widget.sseService),
       );
     }
   }
@@ -312,6 +333,8 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          _buildHeartbeatBadge(),
           const SizedBox(height: 20),
           // Camera Preview — 가장 최근 이벤트 사진이 있으면 그걸, 없으면 자리표시자
           Container(
@@ -421,11 +444,11 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             children: [
               Expanded(
-                child: _buildTestButton('노크', const Color(0xFF0F2744), const Color(0xFF3B82F6), EventType.knock),
+                child: _buildTestButton('노크', const Color(0xFF0F2744), const Color(0xFF3B82F6), EventType.knock, severity: 1),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _buildTestButton('초인종', const Color(0xFF0F2744), const Color(0xFF3B82F6), EventType.doorbell),
+                child: _buildTestButton('초인종', const Color(0xFF0F2744), const Color(0xFF3B82F6), EventType.doorbell, severity: 1),
               ),
             ],
           ),
@@ -433,12 +456,22 @@ class _HomeScreenState extends State<HomeScreen> {
           Row(
             children: [
               Expanded(
-                child: _buildTestButton('위협', const Color(0xFF2D1A00), const Color(0xFFFB923C), EventType.impact),
+                child: _buildTestButton('도어락 오류', const Color(0xFF2D1A00), const Color(0xFFFB923C), EventType.doorlockError, severity: 2),
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: _buildTestButton('화재', const Color(0xFF2D0F0F), const Color(0xFFEF4444), EventType.emergency),
+                child: _buildTestButton('도어락 경보', const Color(0xFF2D0F0F), const Color(0xFFEF4444), EventType.doorlockAlarm, severity: 3),
               ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: _buildTestButton('화재', const Color(0xFF2D0F0F), const Color(0xFFEF4444), EventType.emergency, severity: 3),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(child: SizedBox()),
             ],
           ),
         ],
@@ -446,53 +479,170 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildEventCard(EventModel event) {
-    Color borderColor;
-    switch (event.eventType) {
-      case EventType.knock:
-      case EventType.doorbell:
-        borderColor = const Color(0xFF3B82F6);
-        break;
-      case EventType.impact:
-        borderColor = const Color(0xFFFB923C);
-        break;
-      case EventType.emergency:
-        borderColor = const Color(0xFFEF4444);
-        break;
-      default:
-        borderColor = const Color(0xFF3B82F6);
+  /// 기기 자가진단 상태 배지. 정상이면 조용히 초록, 이상이 있으면 색+아이콘으로
+  /// 심각도를 알리고 탭하면 상세 목록을 보여준다(rev.4 섹션 5).
+  Widget _buildHeartbeatBadge() {
+    final awayMode = widget.settingsService.awayMode;
+    if (_loadingHeartbeat) {
+      return const SizedBox.shrink();
     }
+    if (_heartbeat == null) {
+      // 조회 실패(연결 안 됨 등)는 별도로 크게 떠들지 않는다 — 상단 연결 배지가
+      // 이미 "연결 끊김"을 보여주고 있으므로 중복 경고를 피한다.
+      return const SizedBox.shrink();
+    }
+
+    final evaluation = evaluateHeartbeat(_heartbeat!, awayModeSuppresses24hWarning: awayMode);
+    final Color badgeColor;
+    final IconData badgeIcon;
+    final String badgeText;
+    switch (evaluation.level) {
+      case DeviceHealthLevel.critical:
+        badgeColor = const Color(0xFFEF4444);
+        badgeIcon = Icons.error_outline;
+        badgeText = '기기 이상 ${evaluation.issues.length}건';
+        break;
+      case DeviceHealthLevel.warning:
+        badgeColor = const Color(0xFFFB923C);
+        badgeIcon = Icons.warning_amber_rounded;
+        badgeText = '확인 필요 ${evaluation.issues.length}건';
+        break;
+      case DeviceHealthLevel.normal:
+        badgeColor = const Color(0xFF4ADE80);
+        badgeIcon = Icons.check_circle_outline;
+        badgeText = '기기 정상';
+        break;
+    }
+
+    return GestureDetector(
+      onTap: () => _showHeartbeatDetail(evaluation),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(50),
+              border: Border.all(color: badgeColor.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(badgeIcon, size: 14, color: badgeColor),
+                const SizedBox(width: 4),
+                Text(badgeText, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: badgeColor)),
+              ],
+            ),
+          ),
+          if (awayMode) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: const Color(0xFF3B82F6).withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(50),
+                border: Border.all(color: const Color(0xFF3B82F6).withValues(alpha: 0.4)),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.luggage_outlined, size: 14, color: Color(0xFF3B82F6)),
+                  SizedBox(width: 4),
+                  Text('외출 중', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF3B82F6))),
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _showHeartbeatDetail(DeviceHealthEvaluation evaluation) {
+    final status = _heartbeat!;
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF1E2535),
+        title: Text(
+          evaluation.isNormal ? '기기 정상' : '기기 상태 확인',
+          style: const TextStyle(color: Color(0xFFE2E8F0)),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (evaluation.isNormal)
+              const Text('모든 항목이 정상입니다.', style: TextStyle(color: Color(0xFF9CA3AF)))
+            else
+              ...evaluation.issues.map(
+                (issue) => Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('• $issue', style: const TextStyle(color: Color(0xFFE2E8F0))),
+                ),
+              ),
+            const Divider(color: Color(0xFF2A2A3D), height: 24),
+            Text(
+              '마지막 응답: ${status.secondsSinceLast}초 전 · 마이크 ${status.micOk ? '정상' : '이상'} · '
+              '웨이크핀 ${status.wakePinIdle} · 카메라 ${status.camOk ? '정상' : '이상'} · '
+              '무음 ${status.hoursSinceSound.toStringAsFixed(1)}시간째',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF6B7280)),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('닫기', style: TextStyle(color: Color(0xFF3B82F6))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEventCard(EventModel event) {
+    final color = colorForSeverity(event.severity);
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFF1E2535),
         borderRadius: BorderRadius.circular(12),
         border: Border(
-          left: BorderSide(color: borderColor, width: 4),
+          left: BorderSide(color: color, width: 4),
         ),
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                event.eventType.displayName,
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: borderColor,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(iconForSeverity(event.severity), size: 15, color: color),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        event.displayMessage,
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: color,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                event.loiterConfirmed
-                    ? '방문자 체류 확인'
-                    : (event.visionResult?.displayName ?? '방문자 감지됨'),
-                style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
-              ),
-            ],
+                const SizedBox(height: 2),
+                Text(
+                  event.loiterConfirmed
+                      ? '방문자 체류 확인'
+                      : (event.visionResult?.displayName ?? event.eventType.emoji),
+                  style: const TextStyle(fontSize: 16, color: Color(0xFF9CA3AF)),
+                ),
+              ],
+            ),
           ),
           Text(
             _formatTime(DateTime.tryParse(event.timestamp) ?? DateTime.now()),
@@ -530,9 +680,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildTestButton(String label, Color bgColor, Color textColor, EventType type) {
+  Widget _buildTestButton(String label, Color bgColor, Color textColor, EventType type, {int severity = 1}) {
     return GestureDetector(
-      onTap: () => _simulateEvent(type),
+      onTap: () => _simulateEvent(type, severity: severity),
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 16),
         decoration: BoxDecoration(

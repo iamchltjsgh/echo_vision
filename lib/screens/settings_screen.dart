@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import '../models/alert_presets.dart';
 import '../models/event_model.dart';
 import '../models/mask_region.dart';
 import '../services/history_service.dart';
@@ -178,7 +177,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           _buildSectionTitle('알림 설정'),
           const SizedBox(height: 4),
           const Text(
-            '이벤트 종류마다 플래시·진동·소리를 원하는 조합으로 켜고 끌 수 있어요.',
+            '이벤트 종류마다 플래시·진동·소리를 원하는 조합으로 켜고 끌 수 있어요. '
+            '얼마나 세게(길게·여러 번) 울릴지는 심각도가 자동으로 정해요.',
             style: TextStyle(fontSize: 14, color: Color(0xFF6B7280)),
           ),
           const SizedBox(height: 12),
@@ -266,6 +266,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       AndroidFlutterLocalNotificationsPlugin>()
                   ?.requestFullScreenIntentPermission();
             },
+          ),
+          const SizedBox(height: 24),
+          // Away Mode
+          _buildSectionTitle('외출 모드'),
+          const SizedBox(height: 4),
+          const Text(
+            '집을 오래 비울 때 켜두면, 24시간 동안 소리가 없다는 경고만 숨겨요. '
+            '마이크·카메라·기기 이상 같은 진짜 고장 경고는 그대로 떠요.',
+            style: TextStyle(fontSize: 14, color: Color(0xFF6B7280)),
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E2535),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('외출 중', style: TextStyle(fontSize: 16, color: Color(0xFFE2E8F0))),
+                ),
+                Switch(
+                  value: widget.settingsService.awayMode,
+                  onChanged: (v) => setState(() => widget.settingsService.awayMode = v),
+                  activeThumbColor: const Color(0xFF3B82F6),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 24),
           // Neighbor Privacy Masking
@@ -386,81 +415,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ],
           ),
-          if (config.flash) ...[
-            const SizedBox(height: 10),
-            _buildPresetRow<FlashPreset>(
-              label: '플래시 길이',
-              options: FlashPreset.values,
-              selected: config.flashPreset,
-              displayName: (p) => p.displayName,
-              onSelect: (p) {
-                setState(() {
-                  widget.settingsService.setAlertConfigFor(type, config.copyWith(flashPreset: p));
-                });
-              },
-            ),
-          ],
-          if (config.haptic) ...[
-            const SizedBox(height: 10),
-            _buildPresetRow<VibrationPreset>(
-              label: '진동 스타일',
-              options: VibrationPreset.values,
-              selected: config.vibrationPreset,
-              displayName: (p) => p.displayName,
-              onSelect: (p) {
-                setState(() {
-                  widget.settingsService.setAlertConfigFor(type, config.copyWith(vibrationPreset: p));
-                });
-              },
-            ),
-          ],
         ],
       ),
-    );
-  }
-
-  /// 프리셋(짧게/보통/길게 등) 고르는 작은 알약 버튼 줄 — 플래시 길이/진동 스타일 공용
-  Widget _buildPresetRow<T>({
-    required String label,
-    required List<T> options,
-    required T selected,
-    required String Function(T) displayName,
-    required ValueChanged<T> onSelect,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(label, style: const TextStyle(fontSize: 13, color: Color(0xFF6B7280))),
-        const SizedBox(height: 6),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: options.map((option) {
-            final isSelected = option == selected;
-            return GestureDetector(
-              onTap: () => onSelect(option),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                decoration: BoxDecoration(
-                  color: isSelected ? const Color(0xFF3B82F6) : const Color(0xFF0A0A14),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(
-                    color: isSelected ? const Color(0xFF3B82F6) : const Color(0xFF2A2A3D),
-                  ),
-                ),
-                child: Text(
-                  displayName(option),
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isSelected ? Colors.white : const Color(0xFF9CA3AF),
-                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ],
     );
   }
 

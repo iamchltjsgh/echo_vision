@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:http/http.dart' as http;
 import '../models/event_model.dart';
+import '../models/heartbeat_status.dart';
 import '../models/mask_region.dart';
 import 'background_sse_handler.dart';
 
@@ -30,6 +31,8 @@ class SSEService {
       StreamController<EventModel>.broadcast();
   final StreamController<bool> _connectionController =
       StreamController<bool>.broadcast();
+  final StreamController<Map<String, dynamic>> _videoReadyController =
+      StreamController<Map<String, dynamic>>.broadcast();
 
   bool _isConnected = false;
   String _serverUrl = 'http://10.91.157.5:5000';
@@ -44,6 +47,10 @@ class SSEService {
 
   /// 연결 상태 스트림
   Stream<bool> get connectionStream => _connectionController.stream;
+
+  /// 영상 준비 완료 스트림. {event_id, video} 형태의 가벼운 알림만 흘려보내므로
+  /// 구독하는 화면이 event_id로 자기가 들고 있는 이벤트를 직접 찾아 갱신해야 한다.
+  Stream<Map<String, dynamic>> get videoReadyStream => _videoReadyController.stream;
 
   /// 현재 연결 상태
   bool get isConnected => _isConnected;
@@ -108,6 +115,9 @@ class SSEService {
           break;
         case 'loiter_confirmed':
           _loiterController.add(EventModel.fromJson(json));
+          break;
+        case 'video_ready':
+          _videoReadyController.add(json);
           break;
         default:
           break;
@@ -219,11 +229,29 @@ class SSEService {
     return null;
   }
 
+  /// 기기 자가진단 상태 조회 (GET /device/heartbeat-status) — 홈 화면 상단 배지용.
+  /// 실패(연결 안 됨 등)하면 null — 호출부가 "확인 불가"로 처리한다.
+  Future<HeartbeatStatus?> getHeartbeatStatus() async {
+    try {
+      final response =
+          await http.get(Uri.parse('$_serverUrl/device/heartbeat-status'));
+      if (response.statusCode == 200) {
+        return HeartbeatStatus.fromJson(
+          jsonDecode(response.body) as Map<String, dynamic>,
+        );
+      }
+    } catch (e) {
+      debugPrint('기기 상태 조회 오류: $e');
+    }
+    return null;
+  }
+
   /// 리소스 해제
   void dispose() {
     _portSubscription?.cancel();
     _eventController.close();
     _loiterController.close();
     _connectionController.close();
+    _videoReadyController.close();
   }
 }
