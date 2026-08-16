@@ -13,12 +13,14 @@ Flutter 앱(lib/services/sse_service.dart)이 기대하는 API:
   POST /device/mask-regions         - 마스킹 영역 좌표 저장 (앱의 설치 모드가 호출)
   GET  /device/mask-regions/status  - 설정 화면에 보여줄 요약 상태
 
-기기 자가진단 (rev.4 — 앱 홈 화면 상단 배지가 주기적으로 조회):
-  GET  /device/heartbeat-status  - mic_ok/cam_ok/wake_pin_idle 등 자가진단 값
+기기 자가진단 (rev.4 섹션 5 — ESP32가 주기 보고, 앱 홈 화면 상단 배지가 조회):
+  POST /heartbeat                - ESP32가 보내는 생존 4필드 + 자가진단 6필드(총 10개) 수신
+  GET  /device/heartbeat-status  - 위 값 + 서버가 계산한 seconds_since_last (앱용 요약)
 
 로컬 테스트 전용 (Flask 앱이 아니라 이 서버 자체를 손으로 찔러보기 위한 것):
   POST /trigger               - 실제 오디오 AI 없이 가짜 이벤트 하나를 SSE로 브로드캐스트
-                                 (severity, video_pending도 함께 지정 가능)
+                                 (severity, video_pending도 함께 지정 가능. DOORLOCK_ERROR는
+                                 severity를 안 주면 180초 반복 카운터로 자동 산정됨 — rev.4 섹션 3)
   POST /trigger/video-ready   - 가짜 video_ready 이벤트를 SSE로 브로드캐스트
   POST /device/heartbeat-status - 자가진단 값을 임의로 덮어써서 이상 상태를 재현
   GET  /                      - 브라우저에서 위 트리거들을 눌러볼 수 있는 테스트 페이지
@@ -50,34 +52,73 @@ VALID_SOUND_TYPES = {
     "DOORLOCK_ALARM",
     "DOORLOCK_ERROR",
     "EMERGENCY",
+    "IMPACT",    # 폐기된 판정이지만 구버전 호환을 위해 유지 (앱은 doorlockAlarm으로 취급)
     "NORMAL",
+    "UNKNOWN",
 }
 # sound_type별 기본 severity(0~3). /trigger 호출 시 severity를 안 주면 이 값을 쓴다 —
 # 실제로는 오디오 AI가 각 이벤트마다 계산해서 보내는 값이라 여기 건 로컬 테스트용 근사치.
+# DOORLOCK_ERROR는 예외: 180초 반복 카운터가 있으면 이 기본값 대신 그쪽을 따른다
+# (아래 _doorlock_error_severity 참고, rev.4 섹션 3).
 DEFAULT_SEVERITY = {
     "KNOCK": 1,
     "DOORBELL": 1,
     "DOORLOCK_ERROR": 2,
     "DOORLOCK_ALARM": 3,
     "EMERGENCY": 3,
+    "IMPACT": 1,
     "NORMAL": 0,
+    "UNKNOWN": 1,
 }
+
+# rev.4 섹션 3: DOORLOCK_ERROR가 180초 안에 반복되면 severity가 1→2→3으로 오른다.
+# 거주자가 비밀번호를 한두 번 틀리는 건 흔하지만, 세 번째부터는 실제 침입
+# 시도일 가능성이 높다고 보기 때문(문서 "3회 기준" 근거 참고). 3회째부터는
+# video_pending도 함께 True로 만들어 영상 확보 대상에 올린다.
+DOORLOCK_ERROR_WINDOW_SEC = 180
+
+_doorlock_error_lock = threading.Lock()
+_doorlock_error_events: list[datetime] = []  # 최근 DOORLOCK_ERROR 발생 시각(슬라이딩 윈도우)
+
+
+def _doorlock_error_severity() -> tuple[int, bool]:
+    """DOORLOCK_ERROR 발생을 기록하고, 180초 윈도우 내 반복 횟수 기준 (severity, video_pending)을 반환한다."""
+    now = datetime.now(KST)
+    with _doorlock_error_lock:
+        cutoff = now - timedelta(seconds=DOORLOCK_ERROR_WINDOW_SEC)
+        _doorlock_error_events[:] = [t for t in _doorlock_error_events if t > cutoff]
+        _doorlock_error_events.append(now)
+        count = len(_doorlock_error_events)
+    severity = min(count, 3)
+    return severity, count >= 3
+
 
 _lock = threading.Lock()
 _events: list[dict] = []  # 오래된 것부터 append됨
 _subscribers: "set[queue.Queue]" = set()
 
-# 기기(ESP32) 자가진단 상태의 로컬 테스트용 목업. 실제로는 ESP32가 주기적으로
-# 보고하는 값을 서버가 갱신해야 하지만, 이 저장소엔 실기기가 없으므로 건강한
-# 기본값을 깔아두고 POST /device/heartbeat-status로 테스트 시 임의 덮어쓰기만 지원한다.
+# 기기(ESP32) 자가진단 상태 (rev.4 섹션 5). 생존 4필드 + 자가진단 6필드, 총
+# 10개를 POST /heartbeat로 받아 최신 값만 저장한다. seconds_since_last는 저장하지
+# 않고 _heartbeat_last_at으로부터 조회 시점마다 계산한다 — 그래야 서버가 오래
+# 떠 있어도(또는 기기가 응답을 멈춰도) 값이 실제 경과 시간과 어긋나지 않는다.
+# 실기기가 없는 이 저장소에서는 건강한 기본값을 깔아두고, POST
+# /device/heartbeat-status로 테스트 시 임의 항목만 덮어쓸 수 있게 지원한다.
 _heartbeat_lock = threading.Lock()
 _heartbeat_status: dict = {
-    "seconds_since_last": 5,
+    # 생존 4필드
+    "wake_count": 0,
+    "battery_mv": 3900,
+    "sd_ok": True,
+    "pending": 0,
+    # 자가진단 6필드
     "mic_ok": True,
-    "wake_pin_idle": "HIGH",
+    "mic_rms": 120,
     "cam_ok": True,
+    "cam_frame_size": 24500,
+    "wake_pin_idle": "HIGH",
     "hours_since_sound": 0.1,
 }
+_heartbeat_last_at: datetime = datetime.now(KST)
 
 # 이웃 프라이버시 마스킹 영역. 이벤트(_events)와 달리 카메라 화각이 거의 안 바뀌는
 # 설치형 기기 특성상 자주 안 바뀌므로, 메모리 캐시 + 파일(mask_regions.json)
@@ -283,10 +324,20 @@ def trigger():
 
     confidence = float(body.get("confidence", 0.9))
     image = body.get("image")
-    severity = int(body.get("severity", DEFAULT_SEVERITY.get(sound_type, 1)))
+
+    if sound_type == "DOORLOCK_ERROR" and "severity" not in body:
+        # 실제 흐름(펌웨어는 severity를 보내지 않음)을 재현: 180초 반복
+        # 카운터로 severity를 자동 산정한다. severity를 명시하면 이 로직을
+        # 건너뛰고 지정값을 그대로 쓴다(특정 등급을 바로 테스트하고 싶을 때).
+        auto_severity, auto_video_pending = _doorlock_error_severity()
+        severity = auto_severity
+        video_pending = bool(body.get("video_pending", auto_video_pending))
+    else:
+        severity = int(body.get("severity", DEFAULT_SEVERITY.get(sound_type, 1)))
+        video_pending = bool(body.get("video_pending", False))
+
     if not 0 <= severity <= 3:
         return jsonify({"error": "severity must be 0~3"}), 400
-    video_pending = bool(body.get("video_pending", False))
 
     event = _make_event(sound_type, confidence, image, severity, video_pending)
     with _lock:
@@ -316,20 +367,58 @@ def trigger_video_ready():
     return jsonify(payload), 200
 
 
+@app.route("/heartbeat", methods=["POST"])
+def heartbeat_ingest():
+    """ESP32가 주기적으로 보내는 자가진단 보고 (rev.4 섹션 5).
+    생존 4필드(wake_count, battery_mv, sd_ok, pending) + 자가진단 6필드(mic_ok,
+    mic_rms, cam_ok, cam_frame_size, wake_pin_idle, hours_since_sound), 총
+    10개 중 보내온 필드만 최신 값으로 갱신한다. seconds_since_last는 여기서
+    받는 값이 아니라 이 보고가 도착한 시각으로부터 GET 쪽에서 계산한다."""
+    global _heartbeat_last_at
+    body = request.get_json(silent=True) or {}
+    with _heartbeat_lock:
+        for key in _heartbeat_status:
+            if key in body:
+                _heartbeat_status[key] = body[key]
+        _heartbeat_last_at = datetime.now(KST)
+        result = dict(_heartbeat_status)
+    return jsonify(result), 200
+
+
 @app.route("/device/heartbeat-status", methods=["GET", "POST"])
 def heartbeat_status():
-    """기기 자가진단 상태. GET은 앱이 주기적으로 조회하고, POST는 로컬 테스트용으로
-    특정 항목만 골라 이상 상태를 재현할 때 쓴다(예: {"mic_ok": false})."""
+    """기기 자가진단 상태 (앱용 요약). GET은 앱이 주기적으로 조회하고, POST는
+    로컬 테스트용으로 특정 항목만 골라 이상 상태를 재현할 때 쓴다
+    (예: {"mic_ok": false}). 실제 기기 보고는 POST /heartbeat로 들어온다."""
+    global _heartbeat_last_at
+
     if request.method == "GET":
         with _heartbeat_lock:
-            return jsonify(_heartbeat_status)
+            seconds_since_last = int((datetime.now(KST) - _heartbeat_last_at).total_seconds())
+            result = {
+                **_heartbeat_status,
+                "seconds_since_last": seconds_since_last,
+                "last_heartbeat_at": _heartbeat_last_at.isoformat(),
+            }
+        return jsonify(result)
 
     body = request.get_json(silent=True) or {}
     with _heartbeat_lock:
         for key in _heartbeat_status:
             if key in body:
                 _heartbeat_status[key] = body[key]
-        result = dict(_heartbeat_status)
+        # 테스트 페이지가 "620초 전"처럼 경과 시간을 직접 지정하고 싶을 때를
+        # 위한 예외 — 그 외에는 이 POST 자체를 "방금 보고 도착"으로 취급한다.
+        if "seconds_since_last" in body:
+            _heartbeat_last_at = datetime.now(KST) - timedelta(seconds=float(body["seconds_since_last"]))
+        else:
+            _heartbeat_last_at = datetime.now(KST)
+        seconds_since_last = int((datetime.now(KST) - _heartbeat_last_at).total_seconds())
+        result = {
+            **_heartbeat_status,
+            "seconds_since_last": seconds_since_last,
+            "last_heartbeat_at": _heartbeat_last_at.isoformat(),
+        }
     return jsonify(result), 200
 
 
