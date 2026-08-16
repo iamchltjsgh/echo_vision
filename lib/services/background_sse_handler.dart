@@ -11,8 +11,25 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/alert_presets.dart';
 import '../models/event_model.dart';
+import '../models/severity.dart';
 import 'history_service.dart';
 import 'settings_service.dart';
+
+/// 같은 종류의 이벤트가 짧은 간격으로 계속 오는 동안 알림을 하나로 묶어 쓰기
+/// 위한 세션 상태. 청각장애인 등 소리를 못 듣는 사용자는 진동/화면만으로
+/// 알림 빈도를 판단하므로, 상황이 지속되면 알림이 계속 새로 쌓이지 않고
+/// 하나가 갱신되어야 한다(rev.4 섹션 3 — 이번 작업 최우선순위).
+class _NotificationSession {
+  final int notificationId;
+  final DateTime firstEventAt;
+  DateTime lastEventAt;
+
+  _NotificationSession({
+    required this.notificationId,
+    required this.firstEventAt,
+    required this.lastEventAt,
+  });
+}
 
 /// Foreground Service가 시작될 때 호출되는 최상위 콜백.
 /// 반드시 최상위 함수여야 하며, 이 안에서 setTaskHandler를 부르는 게
@@ -40,6 +57,10 @@ class SseTaskHandler extends TaskHandler {
   final SettingsService _settings = SettingsService();
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
+
+  /// 이벤트 타입(sound_type)별 진행 중인 알림 세션. 60초 안에 같은 타입의
+  /// 이벤트가 또 오면 새 알림을 만들지 않고 이 세션의 notificationId로 갱신한다.
+  final Map<String, _NotificationSession> _sessions = {};
 
   http.Client? _client;
   bool _isConnected = false;
@@ -207,6 +228,9 @@ class SseTaskHandler extends TaskHandler {
           case 'loiter_confirmed':
             await _handleLoiterConfirmed(json);
             break;
+          case 'video_ready':
+            await _handleVideoReady(json);
+            break;
           default:
             // connected 확인용 메시지 및 미지의 타입은 무시.
             break;
@@ -249,41 +273,90 @@ class SseTaskHandler extends TaskHandler {
     _sendPort?.send(jsonEncode(json));
   }
 
+  /// 스냅샷보다 최대 30분가량 늦게 도착하는 영상. 도착하면 로컬 이력의 해당
+  /// 이벤트에 파일명을 채워 넣는다(이벤트 팝업/이력 탭이 다시 로드되면 반영됨).
+  Future<void> _handleVideoReady(Map<String, dynamic> json) async {
+    final eventId = json['event_id'] as String?;
+    final video = json['video'] as String?;
+    if (eventId == null || video == null) return;
+
+    final history = await _history.load();
+    for (final e in history) {
+      if (e.eventId == eventId) {
+        e.video = video;
+        e.videoPending = false;
+      }
+    }
+    await _history.save(history);
+
+    _sendPort?.send(jsonEncode(json));
+  }
+
   Future<void> _showEventNotification(EventModel event) async {
     // 설정 화면(UI isolate)에서 방금 바꿨을 수도 있는 값이라 캐시 말고 새로 읽는다.
     await (await SharedPreferences.getInstance()).reload();
-    final vibrationPreset = _settings.alertConfigFor(event.eventType).vibrationPreset;
 
     // 앱이 지금 포그라운드면 인앱 알림(NotificationService.triggerAlert)이
     // 곧 따로 실행되므로, 시스템 알림은 소리/진동 없이 조용히만(배지처럼) 띄운다.
-    // EMERGENCY는 예외 — 놓치면 안 되니 포그라운드여도 그대로 강행한다.
+    // severity 최고 단계는 예외 — 놓치면 안 되니 포그라운드여도 그대로 강행한다.
     final isForeground = await FlutterForegroundTask.isAppOnForeground;
-    final isEmergency = event.eventType == EventType.emergency;
-    final alertLoudly = isEmergency || !isForeground;
+    final isCritical = event.severity >= 3 || event.isEmergency;
+    final alertLoudly = isCritical || !isForeground;
 
     String channelId;
     String channelName;
     Importance importance;
-    Color color;
-    switch (event.eventType) {
-      case EventType.impact:
-        channelId = _channelAlertId;
-        channelName = '위협 알림';
-        importance = Importance.high;
-        color = const Color(0xFFFB923C);
-        break;
-      case EventType.emergency:
-        channelId = _channelEmergencyId;
-        channelName = '긴급 알림';
-        importance = Importance.max;
-        color = const Color(0xFFEF4444);
-        break;
-      default:
-        channelId = _channelNormalId;
-        channelName = '일반 알림';
-        importance = Importance.high;
-        color = const Color(0xFF3B82F6);
+    if (event.severity >= 3) {
+      channelId = _channelEmergencyId;
+      channelName = '긴급 알림';
+      importance = Importance.max;
+    } else if (event.severity == 2) {
+      channelId = _channelAlertId;
+      channelName = '경고 알림';
+      importance = Importance.high;
+    } else {
+      channelId = _channelNormalId;
+      channelName = '일반 알림';
+      importance = Importance.high;
     }
+    final color = colorForSeverity(event.severity);
+
+    // 같은 종류(sound_type)의 이벤트가 60초 안에 연달아 오면 새 알림을 쌓지 않고
+    // 기존 알림을 갱신한다 — 알림 폭탄이 오히려 "무음 취급하기로 한 결정"처럼
+    // 보이는 걸 막는다(rev.4 섹션 3). 60초 넘게 조용했으면 새 세션으로 취급.
+    final now = DateTime.now();
+    final sessionKey = event.eventType.name;
+    final existingSession = _sessions[sessionKey];
+    final isNewSession = existingSession == null ||
+        now.difference(existingSession.lastEventAt) > const Duration(seconds: 60);
+
+    final int notificationId;
+    final DateTime sessionStart;
+    if (isNewSession) {
+      notificationId = event.eventId?.hashCode.abs() ??
+          now.millisecondsSinceEpoch.remainder(1 << 31);
+      sessionStart = now;
+    } else {
+      notificationId = existingSession.notificationId;
+      sessionStart = existingSession.firstEventAt;
+    }
+    _sessions[sessionKey] = _NotificationSession(
+      notificationId: notificationId,
+      firstEventAt: sessionStart,
+      lastEventAt: now,
+    );
+
+    // 세션이 이어지는 동안 제목에 경과 시간을 덧붙인다 — 화면을 안 보고 진동만
+    // 느끼는 사용자도 "상황이 계속되고 있다"는 걸 알림 자체에서 알 수 있게.
+    var title = event.displayMessage;
+    if (!isNewSession) {
+      final elapsedMinutes = now.difference(sessionStart).inMinutes;
+      title = elapsedMinutes < 1
+          ? '$title · 계속되고 있습니다'
+          : '$title · $elapsedMinutes분째';
+    }
+
+    final (vibrationPreset, repeatCount) = vibrationParamsForSeverity(event.severity);
 
     final androidDetails = AndroidNotificationDetails(
       channelId,
@@ -297,29 +370,27 @@ class SseTaskHandler extends TaskHandler {
       enableVibration: alertLoudly,
       // flutter_local_notifications는 Int64List를 요구한다(vibration 패키지와 다름 —
       // alert_presets.dart의 buildVibrationPattern 주석 참고).
-      vibrationPattern: Int64List.fromList(buildVibrationPattern(
-        event.eventType.vibrationRepeatCount,
-        vibrationPreset,
-      )),
+      vibrationPattern: Int64List.fromList(
+        buildVibrationPattern(repeatCount, vibrationPreset),
+      ),
       // Android 14+에서는 USE_FULL_SCREEN_INTENT를 사용자가 수동으로 허용해야
       // 실제로 잠금화면 위로 뜬다 (main.dart 온보딩 참고) — 안 돼 있으면
       // 그냥 최우선 헤드업 알림으로 자연 강등된다.
-      fullScreenIntent: isEmergency,
-      category: isEmergency ? AndroidNotificationCategory.alarm : null,
+      fullScreenIntent: isCritical,
+      category: isCritical ? AndroidNotificationCategory.alarm : null,
       // 채널 생성 시점(_initNotifications)에 이미 정해지지만, 혹시 그 전에
       // 이 알림이 채널을 새로 만들게 되는 경우를 대비해 여기도 맞춰둔다.
-      audioAttributesUsage: isEmergency
+      audioAttributesUsage: isCritical
           ? AudioAttributesUsage.alarm
           : AudioAttributesUsage.notification,
     );
 
-    final id = event.eventId?.hashCode.abs() ??
-        DateTime.now().millisecondsSinceEpoch.remainder(1 << 31);
-
+    // 같은 세션 동안은 항상 같은 id로 show()를 다시 호출한다 — 새 알림이 아니라
+    // 기존 알림이 그 자리에서 갱신된다(Android 표준 동작).
     await _notifications.show(
-      id: id,
-      title: '${event.eventType.emoji} ${event.eventType.displayName}',
-      body: isEmergency ? '지금 바로 확인하세요' : '탭하면 자세히 볼 수 있어요',
+      id: notificationId,
+      title: title,
+      body: isCritical ? '지금 바로 확인하세요' : '탭하면 자세히 볼 수 있어요',
       notificationDetails: NotificationDetails(android: androidDetails),
       payload: event.eventId,
     );

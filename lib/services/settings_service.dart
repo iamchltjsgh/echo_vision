@@ -66,6 +66,7 @@ class SettingsService {
   static const String _keyAlertConfig = 'event_alert_config';
   static const String _keyVolume = 'volume';
   static const String _keyBatteryPromptShown = 'battery_optimization_prompt_shown';
+  static const String _keyAwayMode = 'away_mode';
 
   /// SharedPreferences 키. background_sse_handler.dart도 같은 서버 URL을 읽어야 해서 공개.
   static const String keyServerUrl = 'server_url';
@@ -75,36 +76,23 @@ class SettingsService {
   static const List<EventType> alertEventTypes = [
     EventType.knock,
     EventType.doorbell,
-    EventType.impact,
+    EventType.doorlockAlarm,
+    EventType.doorlockError,
     EventType.emergency,
     EventType.unknown,
   ];
 
-  /// 타입별 설정을 저장한 적 없을 때 쓰는 기본값.
-  /// 과거 하드코딩 동작(노크/초인종은 진동만, 위협/화재는 플래시+진동, 미분류는 무알림)과
-  /// 최대한 비슷하게 맞춘 프리셋(예: 위협은 예전에 500ms 긴 점멸이었으니 flashPreset.long).
+  /// 타입별 설정을 저장한 적 없을 때 쓰는 기본값 — 채널(플래시/진동/소리) ON/OFF만
+  /// 여기서 정한다. 실제 진동/플래시의 세기·리듬은 더 이상 타입별이 아니라
+  /// severity가 자동으로 정한다(alert_presets.dart의 *ParamsForSeverity 참고) —
+  /// 그래서 flashPreset/vibrationPreset 값은 이제 의미 없는 기본값일 뿐이다.
   static const Map<EventType, EventAlertConfig> _defaultAlertConfig = {
-    EventType.knock: EventAlertConfig(
-      haptic: true,
-      vibrationPreset: VibrationPreset.shortRepeat,
-    ),
-    EventType.doorbell: EventAlertConfig(
-      haptic: true,
-      vibrationPreset: VibrationPreset.shortRepeat,
-    ),
-    EventType.impact: EventAlertConfig(
-      flash: true,
-      haptic: true,
-      flashPreset: FlashPreset.long,
-      vibrationPreset: VibrationPreset.continuousLong,
-    ),
-    EventType.emergency: EventAlertConfig(
-      flash: true,
-      haptic: true,
-      flashPreset: FlashPreset.normal,
-      vibrationPreset: VibrationPreset.shortRepeat,
-    ),
-    EventType.unknown: EventAlertConfig(vibrationPreset: VibrationPreset.longRepeat),
+    EventType.knock: EventAlertConfig(haptic: true),
+    EventType.doorbell: EventAlertConfig(haptic: true),
+    EventType.doorlockAlarm: EventAlertConfig(flash: true, haptic: true),
+    EventType.doorlockError: EventAlertConfig(flash: true, haptic: true),
+    EventType.emergency: EventAlertConfig(flash: true, haptic: true),
+    EventType.unknown: EventAlertConfig(haptic: true),
   };
 
   SharedPreferences? _prefs;
@@ -161,4 +149,10 @@ class SettingsService {
   /// 나중에 다시 허용하고 싶으면 설정 탭의 "백그라운드 감시" 섹션에서 언제든 가능.
   bool get batteryPromptShown => _prefs?.getBool(_keyBatteryPromptShown) ?? false;
   set batteryPromptShown(bool value) => _prefs?.setBool(_keyBatteryPromptShown, value);
+
+  /// "외출 중" 모드. 켜져 있으면 24시간 무음 경고만 숨긴다(그 외 기기 이상 경고는
+  /// 그대로 뜬다) — 장기간 집을 비운 사용자가 당연한 무음을 이상으로 오해하지
+  /// 않도록. 기본값 false.
+  bool get awayMode => _prefs?.getBool(_keyAwayMode) ?? false;
+  set awayMode(bool value) => _prefs?.setBool(_keyAwayMode, value);
 }

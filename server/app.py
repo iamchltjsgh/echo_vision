@@ -2,7 +2,7 @@
 Echo Vision 로컬 테스트용 Flask 서버 (app_v2 스펙 호환)
 
 Flutter 앱(lib/services/sse_service.dart)이 기대하는 API:
-  GET  /stream              - SSE. type: connected / new_event / loiter_confirmed
+  GET  /stream              - SSE. type: connected / new_event / loiter_confirmed / video_ready
   GET  /events?limit=N      - 최근 이벤트 이력 (최신순)
   GET  /photos/<filename>   - 스냅샷 이미지
   POST /events/<id>/loiter  - 체류 확인 보고 (v2 전용, 앱은 v1처럼 404 나도 무시함)
@@ -13,9 +13,15 @@ Flutter 앱(lib/services/sse_service.dart)이 기대하는 API:
   POST /device/mask-regions         - 마스킹 영역 좌표 저장 (앱의 설치 모드가 호출)
   GET  /device/mask-regions/status  - 설정 화면에 보여줄 요약 상태
 
+기기 자가진단 (rev.4 — 앱 홈 화면 상단 배지가 주기적으로 조회):
+  GET  /device/heartbeat-status  - mic_ok/cam_ok/wake_pin_idle 등 자가진단 값
+
 로컬 테스트 전용 (Flask 앱이 아니라 이 서버 자체를 손으로 찔러보기 위한 것):
-  POST /trigger             - 실제 오디오 AI 없이 가짜 이벤트 하나를 SSE로 브로드캐스트
-  GET  /                    - 브라우저에서 /trigger 눌러볼 수 있는 테스트 페이지
+  POST /trigger               - 실제 오디오 AI 없이 가짜 이벤트 하나를 SSE로 브로드캐스트
+                                 (severity, video_pending도 함께 지정 가능)
+  POST /trigger/video-ready   - 가짜 video_ready 이벤트를 SSE로 브로드캐스트
+  POST /device/heartbeat-status - 자가진단 값을 임의로 덮어써서 이상 상태를 재현
+  GET  /                      - 브라우저에서 위 트리거들을 눌러볼 수 있는 테스트 페이지
 """
 
 from __future__ import annotations
@@ -36,11 +42,42 @@ PHOTOS_DIR.mkdir(exist_ok=True)
 app = Flask(__name__)
 
 KST = timezone(timedelta(hours=9))
-VALID_SOUND_TYPES = {"KNOCK", "DOORBELL", "IMPACT", "EMERGENCY", "NORMAL"}
+# rev.4: 기존 IMPACT(카메라 충격 감지) 판정은 폐기하고 도어락이 스스로 내는
+# 경보음/오류음(DOORLOCK_ALARM/DOORLOCK_ERROR)으로 대체했다.
+VALID_SOUND_TYPES = {
+    "KNOCK",
+    "DOORBELL",
+    "DOORLOCK_ALARM",
+    "DOORLOCK_ERROR",
+    "EMERGENCY",
+    "NORMAL",
+}
+# sound_type별 기본 severity(0~3). /trigger 호출 시 severity를 안 주면 이 값을 쓴다 —
+# 실제로는 오디오 AI가 각 이벤트마다 계산해서 보내는 값이라 여기 건 로컬 테스트용 근사치.
+DEFAULT_SEVERITY = {
+    "KNOCK": 1,
+    "DOORBELL": 1,
+    "DOORLOCK_ERROR": 2,
+    "DOORLOCK_ALARM": 3,
+    "EMERGENCY": 3,
+    "NORMAL": 0,
+}
 
 _lock = threading.Lock()
 _events: list[dict] = []  # 오래된 것부터 append됨
 _subscribers: "set[queue.Queue]" = set()
+
+# 기기(ESP32) 자가진단 상태의 로컬 테스트용 목업. 실제로는 ESP32가 주기적으로
+# 보고하는 값을 서버가 갱신해야 하지만, 이 저장소엔 실기기가 없으므로 건강한
+# 기본값을 깔아두고 POST /device/heartbeat-status로 테스트 시 임의 덮어쓰기만 지원한다.
+_heartbeat_lock = threading.Lock()
+_heartbeat_status: dict = {
+    "seconds_since_last": 5,
+    "mic_ok": True,
+    "wake_pin_idle": "HIGH",
+    "cam_ok": True,
+    "hours_since_sound": 0.1,
+}
 
 # 이웃 프라이버시 마스킹 영역. 이벤트(_events)와 달리 카메라 화각이 거의 안 바뀌는
 # 설치형 기기 특성상 자주 안 바뀌므로, 메모리 캐시 + 파일(mask_regions.json)
@@ -108,7 +145,13 @@ def _broadcast(payload: dict) -> None:
         q.put(data)
 
 
-def _make_event(sound_type: str, confidence: float, image: str | None) -> dict:
+def _make_event(
+    sound_type: str,
+    confidence: float,
+    image: str | None,
+    severity: int,
+    video_pending: bool,
+) -> dict:
     now = datetime.now(KST)
     return {
         "type": "new_event",
@@ -120,6 +163,9 @@ def _make_event(sound_type: str, confidence: float, image: str | None) -> dict:
         "image": image,
         "emergency": sound_type == "EMERGENCY",
         "loiter_confirmed": False,
+        "severity": severity,
+        "video": None,
+        "video_pending": video_pending,
     }
 
 
@@ -237,12 +283,54 @@ def trigger():
 
     confidence = float(body.get("confidence", 0.9))
     image = body.get("image")
+    severity = int(body.get("severity", DEFAULT_SEVERITY.get(sound_type, 1)))
+    if not 0 <= severity <= 3:
+        return jsonify({"error": "severity must be 0~3"}), 400
+    video_pending = bool(body.get("video_pending", False))
 
-    event = _make_event(sound_type, confidence, image)
+    event = _make_event(sound_type, confidence, image, severity, video_pending)
     with _lock:
         _events.append(event)
     _broadcast(event)
     return jsonify(event), 201
+
+
+@app.route("/trigger/video-ready", methods=["POST"])
+def trigger_video_ready():
+    """로컬 테스트용: /trigger로 만든 이벤트에 영상이 뒤늦게 도착한 상황을 재현한다."""
+    body = request.get_json(silent=True) or {}
+    event_id = body.get("event_id")
+    video = body.get("video", "sample.mp4")
+    if not event_id:
+        return jsonify({"error": "event_id is required"}), 400
+
+    with _lock:
+        target = next((e for e in _events if e.get("event_id") == event_id), None)
+        if target is None:
+            return jsonify({"error": "not found"}), 404
+        target["video"] = video
+        target["video_pending"] = False
+
+    payload = {"type": "video_ready", "event_id": event_id, "video": video}
+    _broadcast(payload)
+    return jsonify(payload), 200
+
+
+@app.route("/device/heartbeat-status", methods=["GET", "POST"])
+def heartbeat_status():
+    """기기 자가진단 상태. GET은 앱이 주기적으로 조회하고, POST는 로컬 테스트용으로
+    특정 항목만 골라 이상 상태를 재현할 때 쓴다(예: {"mic_ok": false})."""
+    if request.method == "GET":
+        with _heartbeat_lock:
+            return jsonify(_heartbeat_status)
+
+    body = request.get_json(silent=True) or {}
+    with _heartbeat_lock:
+        for key in _heartbeat_status:
+            if key in body:
+                _heartbeat_status[key] = body[key]
+        result = dict(_heartbeat_status)
+    return jsonify(result), 200
 
 
 @app.route("/")
@@ -258,15 +346,32 @@ def index():
       <p>버튼을 누르면 실제 오디오 AI 없이 가짜 이벤트를 SSE로 쏩니다:</p>
       <button onclick="fire('KNOCK')">노크</button>
       <button onclick="fire('DOORBELL')">초인종</button>
-      <button onclick="fire('IMPACT')">위협</button>
+      <button onclick="fire('DOORLOCK_ERROR')">도어락 오류</button>
+      <button onclick="fire('DOORLOCK_ALARM')">도어락 경보</button>
       <button onclick="fire('EMERGENCY')">화재</button>
+      <button onclick="fire('KNOCK', {video_pending: true})">노크(영상 대기)</button>
+      <hr>
+      <p>기기 자가진단 이상 재현:</p>
+      <button onclick="heartbeat({mic_ok: false})">마이크 이상</button>
+      <button onclick="heartbeat({cam_ok: false})">카메라 이상</button>
+      <button onclick="heartbeat({wake_pin_idle: 'LOW'})">웨이크핀 이상</button>
+      <button onclick="heartbeat({hours_since_sound: 30})">24시간 무음</button>
+      <button onclick="heartbeat({mic_ok: true, cam_ok: true, wake_pin_idle: 'HIGH', hours_since_sound: 0.1, seconds_since_last: 5})">모두 정상으로 복구</button>
       <pre id="log"></pre>
       <script>
-        async function fire(type) {
+        async function fire(type, extra) {
           const res = await fetch('/trigger', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({sound_type: type})
+            body: JSON.stringify(Object.assign({sound_type: type}, extra || {}))
+          });
+          document.getElementById('log').textContent = await res.text();
+        }
+        async function heartbeat(fields) {
+          const res = await fetch('/device/heartbeat-status', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(fields)
           });
           document.getElementById('log').textContent = await res.text();
         }

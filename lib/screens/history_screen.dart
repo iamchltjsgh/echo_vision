@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/event_model.dart';
+import '../models/severity.dart';
 import '../services/sse_service.dart';
 import 'event_screen.dart';
 
@@ -100,32 +101,17 @@ class HistoryScreen extends StatelessWidget {
             )
           else
             ...eventHistory.map((event) {
-              final borderColor = _getEventColor(event.eventType);
               final dt = DateTime.tryParse(event.timestamp) ?? DateTime.now();
               return _HistoryEventTile(
                 sseService: sseService,
                 event: event,
-                borderColor: borderColor,
+                borderColor: colorForSeverity(event.severity),
                 timestamp: dt,
               );
             }),
         ],
       ),
     );
-  }
-
-  Color _getEventColor(EventType type) {
-    switch (type) {
-      case EventType.knock:
-      case EventType.doorbell:
-        return const Color(0xFF3B82F6);
-      case EventType.impact:
-        return const Color(0xFFFB923C);
-      case EventType.emergency:
-        return const Color(0xFFEF4444);
-      default:
-        return const Color(0xFF3B82F6);
-    }
   }
 }
 
@@ -165,12 +151,13 @@ class _HistoryEventTileState extends State<_HistoryEventTile> {
     if (!mounted) return;
     showDialog(
       context: context,
-      builder: (_) => EventScreen(event: event),
+      builder: (_) => EventScreen(event: event, sseService: widget.sseService),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final event = widget.event;
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: GestureDetector(
@@ -187,29 +174,50 @@ class _HistoryEventTileState extends State<_HistoryEventTile> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Text(widget.event.eventType.emoji, style: const TextStyle(fontSize: 20)),
-                  const SizedBox(width: 12),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        widget.event.eventType.displayName,
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: widget.borderColor,
-                        ),
+              Expanded(
+                child: Row(
+                  children: [
+                    Text(event.eventType.emoji, style: const TextStyle(fontSize: 20)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              // 색상만으로 심각도를 구분하지 않는다 — 아이콘도 함께.
+                              Icon(iconForSeverity(event.severity), size: 13, color: widget.borderColor),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  event.displayMessage,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                    color: widget.borderColor,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          if (event.confidence != null)
+                            Text(
+                              '신뢰도 ${(event.confidence! * 100).toStringAsFixed(0)}%',
+                              style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF)),
+                            ),
+                          if (event.videoPending || event.video != null) ...[
+                            const SizedBox(height: 4),
+                            _buildVideoBadge(event),
+                          ],
+                        ],
                       ),
-                      Text(
-                        '신뢰도 ${(widget.event.confidence * 100).toStringAsFixed(0)}%',
-                        style: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF)),
-                      ),
-                    ],
-                  ),
-                ],
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 8),
               _loading
                   ? const SizedBox(
                       width: 16,
@@ -226,6 +234,35 @@ class _HistoryEventTileState extends State<_HistoryEventTile> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildVideoBadge(EventModel event) {
+    final ready = event.video != null;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0A14),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            ready ? Icons.play_circle_outline : Icons.videocam_outlined,
+            size: 12,
+            color: ready ? const Color(0xFF4ADE80) : const Color(0xFF9CA3AF),
+          ),
+          const SizedBox(width: 3),
+          Text(
+            ready ? '영상 재생 가능' : '영상 준비 중',
+            style: TextStyle(
+              fontSize: 11,
+              color: ready ? const Color(0xFF4ADE80) : const Color(0xFF9CA3AF),
+            ),
+          ),
+        ],
       ),
     );
   }

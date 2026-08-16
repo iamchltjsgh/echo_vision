@@ -8,7 +8,10 @@ import '../models/event_model.dart';
 import 'settings_service.dart';
 
 /// 알림 서비스
-/// 소리, 햅틱 진동, 플래시 점멸을 이벤트 타입에 따라 실행합니다.
+/// 소리, 햅틱 진동, 플래시 점멸을 실행합니다.
+/// rev.4: 채널(소리/진동/플래시) 자체를 켤지는 여전히 이벤트 타입별 사용자 설정을
+/// 따르지만, 켜졌을 때 "얼마나 세게" 울릴지(반복 횟수·길이)는 더 이상 타입이
+/// 아니라 severity가 정한다 — 사용자가 임의로 조정하지 않는다.
 class NotificationService {
   final SettingsService _settings;
   final AudioPlayer _audioPlayer = AudioPlayer();
@@ -27,10 +30,10 @@ class NotificationService {
       futures.add(_playSound(event.eventType));
     }
     if (config.haptic) {
-      futures.add(_triggerHaptic(event.eventType, config.vibrationPreset));
+      futures.add(_triggerHaptic(event.severity));
     }
     if (config.flash) {
-      futures.add(_triggerFlash(event.eventType, config.flashPreset));
+      futures.add(_triggerFlash(event.severity));
     }
 
     await Future.wait(futures);
@@ -51,7 +54,8 @@ class NotificationService {
         case EventType.doorbell:
           assetPath = 'sounds/bell.mp3';
           break;
-        case EventType.impact:
+        case EventType.doorlockAlarm:
+        case EventType.doorlockError:
           assetPath = 'sounds/threat.mp3';
           break;
         case EventType.emergency:
@@ -82,21 +86,21 @@ class NotificationService {
     }
   }
 
-  /// 햅틱 진동 실행.
-  /// 반복 횟수는 EventType.vibrationRepeatCount(타입 정체성),
-  /// 길이/스타일은 preset(사용자가 설정 화면에서 고른 값) — 백그라운드 시스템 알림도
-  /// 같은 alert_presets.dart 함수를 써서 인앱/백그라운드 진동이 항상 일치한다.
-  Future<void> _triggerHaptic(EventType type, VibrationPreset preset) async {
+  /// 햅틱 진동 실행. 반복 횟수/길이는 severity가 정한다(alert_presets.dart의
+  /// vibrationParamsForSeverity) — 백그라운드 시스템 알림(background_sse_handler.dart)도
+  /// 같은 함수를 써서 인앱/백그라운드 진동이 항상 일치한다.
+  Future<void> _triggerHaptic(int severity) async {
     try {
       final hasVibrator = await Vibration.hasVibrator();
       if (!hasVibrator) return;
 
-      final pattern = buildVibrationPattern(type.vibrationRepeatCount, preset);
+      final (preset, repeatCount) = vibrationParamsForSeverity(severity);
+      final pattern = buildVibrationPattern(repeatCount, preset);
       await Vibration.vibrate(
         pattern: pattern,
-        // 위협 감지는 강도를 최대로 (기기가 강도 조절을 지원하지 않으면 무시됨).
+        // severity 최고 단계는 강도를 최대로 (기기가 강도 조절을 지원하지 않으면 무시됨).
         // intensities는 pattern과 길이가 같아야 하고, 대기 구간(짝수 인덱스)은 0.
-        intensities: type == EventType.impact
+        intensities: severity >= 3
             ? List.generate(pattern.length, (i) => i.isEven ? 0 : 255)
             : const [],
       );
@@ -105,12 +109,12 @@ class NotificationService {
     }
   }
 
-  /// 플래시 점멸 실행.
-  /// 몇 번 점멸할지는 EventType.flashBlinkCount(타입 정체성),
-  /// 한 번 켜지는 길이는 preset(사용자가 설정 화면에서 고른 값)에서 가져온다.
-  Future<void> _triggerFlash(EventType type, FlashPreset preset) async {
+  /// 플래시 점멸 실행. 몇 번/얼마나 길게 점멸할지는 severity가 정한다
+  /// (alert_presets.dart의 flashParamsForSeverity).
+  Future<void> _triggerFlash(int severity) async {
     try {
-      final blinks = buildFlashBlinks(type.flashBlinkCount, preset);
+      final (preset, blinkCount) = flashParamsForSeverity(severity);
+      final blinks = buildFlashBlinks(blinkCount, preset);
       for (var i = 0; i < blinks.length; i++) {
         final (onMs, offMs) = blinks[i];
         await TorchLight.enableTorch();
