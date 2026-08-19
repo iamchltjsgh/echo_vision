@@ -49,3 +49,6 @@ app.*.map.json
 /server/photos/*
 /server/mask_regions.json
 !/server/photos/.gitkeep
+/server/videos/*
+/server/videos_raw_tmp/*
+/server/photos_rejected/*
